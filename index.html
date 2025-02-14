@@ -147,6 +147,73 @@
           padding: 0 15px;
         }
       }
+
+      /* Add these new styles */
+      .citation-container {
+        margin-top: 20px;
+      }
+
+      .bibtex {
+        display: none;  /* Hidden by default */
+        background: #f5f5f5;
+        padding: 15px;
+        border-radius: 6px;
+        font-family: monospace;
+        font-size: 14px;
+        white-space: pre-wrap;
+        margin-top: 10px;
+        cursor: pointer;
+        position: relative;
+      }
+
+      /* Add this class to show the bibtex */
+      .bibtex.show {
+        display: block;
+      }
+
+      .bibtex:hover {
+        background: #eee;
+      }
+
+      .bibtex::after {
+        content: 'Click to copy';
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(0, 0, 0, 0.8);
+        color: white;
+        padding: 5px 10px;
+        border-radius: 4px;
+        font-size: 14px;
+        opacity: 0;
+        transition: opacity 0.2s;
+        pointer-events: none;
+      }
+
+      .bibtex:hover::after {
+        opacity: 1;
+      }
+
+      .bibtex.copied::after {
+        content: 'Copied!';
+        opacity: 1;
+      }
+
+      .copy-button {
+        background: #2962ff;
+        color: white;
+        border: none;
+        padding: 5px 10px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        margin-top: 10px;
+      }
+
+      .copy-button:hover {
+        background: #1e4bd8;
+      }
     </style>
 
 <script>
@@ -193,7 +260,36 @@
     for (let i = 1; i < videos.length; i++) {
       observer.observe(videos[i]);
     }
+
+    // Add click handlers for bibtex
+    const bibtex = document.getElementById('bibtex');
+    if (bibtex) {
+      bibtex.addEventListener('click', copyBibtex);
+    }
   });
+
+  function toggleBibtex() {
+    const bibtex = document.getElementById('bibtex');
+    if (bibtex) {
+      bibtex.classList.toggle('show');
+    }
+  }
+
+  function copyBibtex() {
+    const bibtex = document.getElementById('bibtex');
+    if (bibtex) {
+      navigator.clipboard.writeText(bibtex.textContent.trim())
+        .then(() => {
+          bibtex.classList.add('copied');
+          setTimeout(() => {
+            bibtex.classList.remove('copied');
+          }, 2000);
+        })
+        .catch(err => {
+          console.error('Failed to copy text: ', err);
+        });
+    }
+  }
 </script>
   </head>
   <body>
@@ -223,13 +319,27 @@
       </p>
 
       <div class="links">
-        <a href="assets/playground_technical_report.pdf" target="_blank">📄 paper</a>
+        <a href="https://arxiv.org/abs/2502.08844" target="_blank">📄 paper</a>
         <a href="https://github.com/google-deepmind/mujoco_playground/" target="_blank">💻 code</a>
+        <a href="#" onclick="toggleBibtex(); return false;">📝 cite</a>
         <a href="https://research.mels.ai" target="_blank">🎮 live demo</a>
         <a href="https://colab.research.google.com/github/google-deepmind/mujoco_playground/blob/main/learning/notebooks/dm_control_suite.ipynb" target="_blank">📕 starter</a>
         <a href="https://colab.research.google.com/github/google-deepmind/mujoco_playground/blob/main/learning/notebooks/locomotion.ipynb" target="_blank">📗 locomotion</a>
         <a href="https://colab.research.google.com/github/google-deepmind/mujoco_playground/blob/main/learning/notebooks/manipulation.ipynb" target="_blank">📘 manipulation</a>
         <a href="https://colab.research.google.com/github/google-deepmind/mujoco_playground/blob/main/learning/notebooks/training_vision_1_t4.ipynb" target="_blank">📙 vision</a>
+      </div>
+
+      <div class="citation-container">
+        <div id="bibtex" class="bibtex" onclick="copyBibtex()">@misc{zakka2025mujocoplayground,
+      title={MuJoCo Playground},
+      author={Kevin Zakka and Baruch Tabanpour and Qiayuan Liao and Mustafa Haiderbhai and Samuel Holt and Jing Yuan Luo and Arthur Allshire and Erik Frey and Koushil Sreenath and Lueder A. Kahrs and Carmelo Sferrazza and Yuval Tassa and Pieter Abbeel},
+      year={2025},
+      eprint={2502.08844},
+      archivePrefix={arXiv},
+      primaryClass={cs.RO},
+      url={https://arxiv.org/abs/2502.08844},
+}</div>
+        <button class="copy-button" onclick="copyBibtex()" style="display: none" id="copyButton">Copy</button>
       </div>
 
       <p style="font-size: 16px; font-style: italic; color: #555; background: #f9f9f9; padding: 15px; border-radius: 6px; margin-top: 20px;">
