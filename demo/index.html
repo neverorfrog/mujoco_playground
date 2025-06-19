@@ -327,6 +327,16 @@
             .details-grid {
                 grid-template-columns: 1fr;
             }
+
+            .bottom-section {
+                flex-direction: column;
+                gap: 30px;
+                text-align: center;
+            }
+
+            .bottom-section .links {
+                justify-content: center;
+            }
         }
     </style>
 </head>
@@ -335,8 +345,13 @@
         <div class="hero">
             <div class="hero-content">
                 <h1>MuJoCo Playground at RSS 2025</h1>
-                <p class="subtitle">GPU-Accelerated Robot Learning & Sim-to-Real Transfer</p>
+                <p class="subtitle">Open-Source GPU-Accelerated Robot Learning & Sim-to-Real Transfer</p>
                 <div class="badge">RSS 2025 Live Demonstration</div>
+                <div class="hero-links" style="margin-top: 30px;">
+                    <a href="https://github.com/google-deepmind/mujoco_playground" target="_blank" style="color: white; text-decoration: none; padding: 8px 16px; border-radius: 20px; background: rgba(255,255,255,0.1); margin: 0 10px; font-size: 14px; border: 1px solid rgba(255,255,255,0.2); transition: background 0.2s;">📚 GitHub</a>
+                    <a href="https://playground.mujoco.org/" target="_blank" style="color: white; text-decoration: none; padding: 8px 16px; border-radius: 20px; background: rgba(255,255,255,0.1); margin: 0 10px; font-size: 14px; border: 1px solid rgba(255,255,255,0.2); transition: background 0.2s;">🌐 Website</a>
+                    <a href="https://arxiv.org/abs/2502.08844" target="_blank" style="color: white; text-decoration: none; padding: 8px 16px; border-radius: 20px; background: rgba(255,255,255,0.1); margin: 0 10px; font-size: 14px; border: 1px solid rgba(255,255,255,0.2); transition: background 0.2s;">📄 Paper</a>
+                </div>
             </div>
         </div>
 
@@ -358,8 +373,13 @@
 
             <h2>Experience the Future of Robot Learning</h2>
             <p style="font-size: 22px; color: #6c757d; margin-bottom: 40px;">
-                Join us for an interactive demonstration of MuJoCo Playground, showcasing robot policies trained with our GPU-accelerated framework. Watch as our robots perform fun tasks, from dynamic locomotion to dexterous manipulation.
+                Join us for an interactive demonstration of MuJoCo Playground, our open-source framework for GPU-accelerated robot learning. Watch as our robots perform fun tasks, from dynamic locomotion to dexterous manipulation. <strong>Try it yourself on Colab using the links below!</strong>
             </p>
+
+            <div style="text-align: center; margin: 30px 0 50px 0;">
+                <a href="https://colab.research.google.com/github/google-deepmind/mujoco_playground/blob/main/learning/notebooks/locomotion.ipynb" target="_blank" style="color: #2c3e50; text-decoration: none; padding: 12px 24px; border-radius: 25px; background: #fff; font-weight: 500; transition: all 0.2s ease; border: 1px solid #eee; margin: 0 10px; display: inline-block;">🏃 Locomotion Colab</a>
+                <a href="https://colab.research.google.com/github/google-deepmind/mujoco_playground/blob/main/learning/notebooks/manipulation.ipynb" target="_blank" style="color: #2c3e50; text-decoration: none; padding: 12px 24px; border-radius: 25px; background: #fff; font-weight: 500; transition: all 0.2s ease; border: 1px solid #eee; margin: 0 10px; display: inline-block;">✋ Manipulation Colab</a>
+            </div>
 
             <div class="demo-grid">
                 <div class="demo-card">
@@ -434,28 +454,25 @@
                         <h3 style="color: #2c3e50; font-size: 20px; margin-bottom: 15px;">📸 Share Your Experience</h3>
                         <p style="color: #666; margin: 0;">Tag us <a href="https://twitter.com/hashtag/MuJoCoPlayground" style="color: #2c3e50; text-decoration: none; border-bottom: 1px solid #ddd;">#MuJoCoPlayground</a> in your photos and videos!</p>
                     </div>
-                </div>
-            </div>
-
-            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin: 40px 0;">
-                <div style="flex: 1;">
-                    <h2 style="margin: 0 0 40px 0;">Questions?</h2>
-                    <p style="margin: 0; font-size: 18px;">
-                        <strong>Kevin Zakka</strong><br>
-                        <a href="mailto:zakka@berkeley.edu" style="color: #2c3e50; text-decoration: none; border-bottom: 1px solid #ddd;">zakka@berkeley.edu</a>
-                    </p>
-                </div>
-                <div style="flex: 1; text-align: right;">
-                    <h2 style="margin: 0 0 40px 0; visibility: hidden;">Questions?</h2>
-                    <div class="links" style="justify-content: flex-end;">
-                        <a href="https://github.com/google-deepmind/mujoco_playground" target="_blank">📚 GitHub</a>
-                        <a href="https://playground.mujoco.org/" target="_blank">🌐 Website</a>
-                        <a href="https://arxiv.org/abs/2502.08844" target="_blank">📄 Paper</a>
+                    <div>
+                        <h3 style="color: #2c3e50; font-size: 20px; margin-bottom: 15px;">💻 Open Source Access</h3>
+                        <p style="color: #666; margin: 0;">Everything is open source! Take the code home and build your own robot policies</p>
                     </div>
                 </div>
             </div>
+
+            <div style="margin: 40px 0;">
+                <h2 style="margin: 0 0 20px 0;">Questions?</h2>
+                <p style="margin: 0; font-size: 18px;">
+                    For questions regarding the demo, contact <strong>Kevin Zakka</strong> at <a href="mailto:zakka@berkeley.edu" style="color: #2c3e50; text-decoration: none; border-bottom: 1px solid #ddd;">zakka@berkeley.edu</a>. For questions related to using Playground, feel free to talk to us in person at the demo or open an issue on <a href="https://github.com/google-deepmind/mujoco_playground/issues" style="color: #2c3e50; text-decoration: none; border-bottom: 1px solid #ddd;">GitHub</a>.
+                </p>
+            </div>
         </div>
     </div>
+
+    <footer style="text-align: center; padding: 20px; color: #666; font-size: 14px; border-top: 1px solid #eee; margin-top: 40px;">
+        <p style="margin: 0;">Last updated: June 19 2025</p>
+    </footer>
 
     <script>
         // Add click handlers for video play/pause
