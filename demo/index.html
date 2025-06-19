@@ -328,14 +328,30 @@
                 grid-template-columns: 1fr;
             }
 
-            .bottom-section {
+            .hero-links {
+                display: flex;
                 flex-direction: column;
-                gap: 30px;
+                gap: 10px;
+                align-items: center;
+            }
+
+            .hero-links a {
+                margin: 0 !important;
+                width: 200px;
                 text-align: center;
             }
 
-            .bottom-section .links {
-                justify-content: center;
+            .colab-links {
+                display: flex;
+                flex-direction: column;
+                gap: 15px;
+                align-items: center;
+            }
+
+            .colab-links a {
+                margin: 0 !important;
+                width: 250px;
+                text-align: center;
             }
         }
     </style>
@@ -376,7 +392,7 @@
                 Join us for an interactive demonstration of MuJoCo Playground, our open-source framework for GPU-accelerated robot learning. Watch as our robots perform fun tasks, from dynamic locomotion to dexterous manipulation. <strong>Try it yourself on Colab using the links below!</strong>
             </p>
 
-            <div style="text-align: center; margin: 30px 0 50px 0;">
+            <div class="colab-links" style="text-align: center; margin: 30px 0 50px 0;">
                 <a href="https://colab.research.google.com/github/google-deepmind/mujoco_playground/blob/main/learning/notebooks/locomotion.ipynb" target="_blank" style="color: #2c3e50; text-decoration: none; padding: 12px 24px; border-radius: 25px; background: #fff; font-weight: 500; transition: all 0.2s ease; border: 1px solid #eee; margin: 0 10px; display: inline-block;">🏃 Locomotion Colab</a>
                 <a href="https://colab.research.google.com/github/google-deepmind/mujoco_playground/blob/main/learning/notebooks/manipulation.ipynb" target="_blank" style="color: #2c3e50; text-decoration: none; padding: 12px 24px; border-radius: 25px; background: #fff; font-weight: 500; transition: all 0.2s ease; border: 1px solid #eee; margin: 0 10px; display: inline-block;">✋ Manipulation Colab</a>
             </div>
