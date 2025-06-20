@@ -181,36 +181,6 @@
             display: block;
         }
 
-        .video-overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0,0,0,0.4);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            opacity: 0;
-            transition: opacity 0.3s ease;
-        }
-
-        .video-container:hover .video-overlay {
-            opacity: 1;
-        }
-
-        .play-button {
-            width: 60px;
-            height: 60px;
-            background: rgba(255,255,255,0.95);
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 24px;
-            color: #2c3e50;
-        }
-
         .details-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -396,12 +366,9 @@
                     <h3>Dynamic Quadruped Locomotion</h3>
                     <p>Watch our Unitree Go1 robot perform dynamic maneuvers including joystick control, handstands, and fall recovery.</p>
                     <div class="video-container">
-                        <video autoplay muted loop>
+                        <video controls muted>
                             <source src="../assets/go1_handstand.mp4" type="video/mp4">
                         </video>
-                        <div class="video-overlay">
-                            <div class="play-button">▶</div>
-                        </div>
                     </div>
                 </div>
 
@@ -409,12 +376,9 @@
                     <h3>Humanoid Fall Recovery</h3>
                     <p>Watch the Booster T1 humanoid walk and demonstrate robust fall recovery capabilities.</p>
                     <div class="video-container">
-                        <video autoplay muted loop>
+                        <video controls muted>
                             <source src="../assets/booster_t1_montage.mp4" type="video/mp4">
                         </video>
-                        <div class="video-overlay">
-                            <div class="play-button">▶</div>
-                        </div>
                     </div>
                 </div>
 
@@ -422,12 +386,9 @@
                     <h3>Humanoid Locomotion</h3>
                     <p>We'll also joystick control a G1 humanoid from Unitree!</p>
                     <div class="video-container">
-                        <video autoplay muted loop>
+                        <video controls muted>
                             <source src="../assets/g1_sim2sim.mp4" type="video/mp4">
                         </video>
-                        <div class="video-overlay">
-                            <div class="play-button">▶</div>
-                        </div>
                     </div>
                 </div>
 
@@ -435,12 +396,9 @@
                     <h3>Dexterous Manipulation</h3>
                     <p>Finally, we'll show off the LEAP hand dexterously manipulating a cube.</p>
                     <div class="video-container">
-                        <video autoplay muted loop>
+                        <video controls muted>
                             <source src="../assets/inhand_reorientation.mp4" type="video/mp4">
                         </video>
-                        <div class="video-overlay">
-                            <div class="play-button">▶</div>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -465,23 +423,5 @@
     <footer style="text-align: center; padding: 20px; color: #666; font-size: 14px; border-top: 1px solid #eee; margin-top: 40px;">
         <p style="margin: 0;">Last updated: June 19, 2025</p>
     </footer>
-
-    <script>
-        // Add click handlers for video play/pause
-        document.querySelectorAll('.video-container').forEach(container => {
-            const video = container.querySelector('video');
-            const overlay = container.querySelector('.video-overlay');
-
-            container.addEventListener('click', () => {
-                if (video.paused) {
-                    video.play();
-                    overlay.style.opacity = '0';
-                } else {
-                    video.pause();
-                    overlay.style.opacity = '1';
-                }
-            });
-        });
-    </script>
 </body>
 </html>
