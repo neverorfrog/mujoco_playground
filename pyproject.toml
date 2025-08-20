@@ -129,18 +129,6 @@ extend-exclude = '''(
  | .ipynb$
 )'''
 
-[pytype]
-inputs = "."
-exclude = [
-    "**/*_test.py",
-    "**/test_*.py",
-    "mujoco_menagerie/**",
-    "mujoco_playground/_src/wrapper_torch.py",
-    "mujoco_playground/learning/getup_rl_games.py"
-]
-output = ".pytype"
-report_errors = true
-
 [tool.pylint]
 ignore-paths = 'mujoco_playground/experimental/**$'
 

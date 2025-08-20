@@ -39,6 +39,9 @@ from mujoco_playground._src.locomotion.spot import joystick as spot_joystick
 from mujoco_playground._src.locomotion.spot import joystick_gait_tracking as spot_joystick_gait_tracking
 from mujoco_playground._src.locomotion.t1 import joystick as t1_joystick
 from mujoco_playground._src.locomotion.t1 import randomize as t1_randomize
+from mujoco_playground._src.locomotion.t1_12dof import joystick as t1_12dof_joystick
+from mujoco_playground._src.locomotion.t1_12dof import randomize as t1_12dof_randomize
+
 
 _envs = {
     "BarkourJoystick": barkour_joystick.Joystick,
@@ -79,6 +82,9 @@ _envs = {
     "T1JoystickRoughTerrain": functools.partial(
         t1_joystick.Joystick, task="rough_terrain"
     ),
+    "T1LowDimJoystick": functools.partial(
+        t1_12dof_joystick.Joystick, task="flat_terrain"
+    )
 }
 
 _cfgs = {
@@ -104,6 +110,7 @@ _cfgs = {
     "SpotJoystickGaitTracking": spot_joystick_gait_tracking.default_config,
     "T1JoystickFlatTerrain": t1_joystick.default_config,
     "T1JoystickRoughTerrain": t1_joystick.default_config,
+    "T1LowDimJoystick": t1_12dof_joystick.default_config,
 }
 
 _randomizer = {
@@ -122,6 +129,7 @@ _randomizer = {
     "Go1Footstand": go1_randomize.domain_randomize,
     "T1JoystickFlatTerrain": t1_randomize.domain_randomize,
     "T1JoystickRoughTerrain": t1_randomize.domain_randomize,
+    "T1LowDimJoystick": t1_12dof_randomize.domain_randomize,
 }
 
 
