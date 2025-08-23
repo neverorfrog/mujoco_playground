@@ -28,68 +28,18 @@ from mujoco_playground._src import mjx_env
 from mujoco_playground._src.collision import geoms_colliding
 from mujoco_playground._src.locomotion.t1_12dof import base as t1_base
 from mujoco_playground._src.locomotion.t1_12dof import t1_constants as consts
+from mujoco_playground._src.locomotion.t1_12dof.config import JoystickConfig
+from mujoco_playground._src.locomotion.t1_12dof.rewards import JoystickRewards
 
+def _to_config_dict(obj):
+    if isinstance(obj, dict):
+        return config_dict.ConfigDict({k: _to_config_dict(v) for k, v in obj.items()})
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_to_config_dict(v) for v in obj)
+    return obj
 
 def default_config() -> config_dict.ConfigDict:
-    return config_dict.create(
-        ctrl_dt=0.02,
-        sim_dt=0.002,
-        episode_length=500,
-        action_repeat=1,
-        action_scale=1.0,
-        history_len=1,
-        soft_joint_pos_limit_factor=0.95,
-        noise_config=config_dict.create(
-            level=1.0,  # Set to 0.0 to disable noise.
-            scales=config_dict.create(
-                joint_pos=0.03,
-                joint_vel=1.5,
-                gravity=0.05,
-                linvel=0.1,
-                gyro=0.2,
-            ),
-        ),
-        reward_config=config_dict.create(
-            scales=config_dict.create(
-                survival=0.25,
-                tracking_lin_vel_x=1.0,
-                tracking_lin_vel_y=1.0,
-                tracking_ang_vel=2.0,  # original 0.5
-                base_height=-20.0,
-                orientation=-5.0,
-                torques=-2.0e-4 / 2,  # original -2.0e-4
-                torque_tiredness=-1.0e-2 / 2,  # original -1.0e-2
-                power=-2.0e-3 / 2,  # original -2.0e-3
-                lin_vel_z=-2.0,
-                ang_vel_xy=-0.2,
-                dof_vel=-1.0e-4,
-                dof_acc=-1.0e-7,
-                root_acc=-1.0e-4,
-                action_rate=-1.0 / 2,  # original -1.0
-                dof_pos_limits=-1.0,
-                collision=-1.0 * 10.0,  # original -1.0
-                feet_slip=-0.1,
-                feet_vel_z=0.0,  # disabled in Isaac config
-                feet_yaw_diff=-1.0,
-                feet_yaw_mean=-1.0,
-                feet_roll=-0.1 * 10.0,  # original -0.1
-                feet_distance=-1.0 * 10.0,  # original -1.0
-                feet_swing=3.0,
-            ),
-            tracking_sigma=0.25,
-            base_height_target=0.68,
-            swing_period=0.2,
-        ),
-        push_config=config_dict.create(
-            enable=True,
-            interval_range=[5.0, 10.0],
-            magnitude_range=[0.1, 1.0],
-        ),
-        lin_vel_x=[-1.0, 1.0],
-        lin_vel_y=[-0.8, 0.8],
-        ang_vel_yaw=[-1.0, 1.0],
-    )
-
+    return _to_config_dict(JoystickConfig().to_dict())
 
 class Joystick(t1_base.T1LowDimEnv):
     """Track a joystick command."""
@@ -106,6 +56,7 @@ class Joystick(t1_base.T1LowDimEnv):
             config_overrides=config_overrides,
         )
         self._post_init()
+        self.rewards = JoystickRewards(self)
 
     def _post_init(self) -> None:
         self._init_q = jp.array(self._mj_model.keyframe("home").qpos)
@@ -134,9 +85,9 @@ class Joystick(t1_base.T1LowDimEnv):
 
         # fmt: off
         self._weights = jp.array([
-        0.01, 1.0, 1.0, 0.01, 1.0, 1.0,  # Left leg.
-        0.01, 1.0, 1.0, 0.01, 1.0, 1.0,  # Right leg.
-    ])
+            0.01, 1.0, 1.0, 0.01, 1.0, 1.0,  # Left leg.
+            0.01, 1.0, 1.0, 0.01, 1.0, 1.0,  # Right leg.
+        ])
         # fmt: on
 
         self._torso_body_id = self._mj_model.body(consts.ROOT_BODY).id
@@ -287,8 +238,6 @@ class Joystick(t1_base.T1LowDimEnv):
         data = state.data.replace(qvel=qvel)
         state = state.replace(data=data)
 
-        # state = self._reset_if_outside_bounds(state)
-
         motor_targets = self._default_pose + action * self._config.action_scale
         data = mjx_env.step(self.mjx_model, state.data, motor_targets, self.n_substeps)
         state.info["motor_targets"] = motor_targets
@@ -325,7 +274,7 @@ class Joystick(t1_base.T1LowDimEnv):
         obs = self._get_obs(data, state.info, contact)
         done = self._get_termination(data)
 
-        rewards = self._get_reward(
+        rewards = self.rewards.get(
             data, action, state.info, state.metrics, done, first_contact, contact
         )
         rewards = {
@@ -410,8 +359,9 @@ class Joystick(t1_base.T1LowDimEnv):
             * self._config.noise_config.scales.joint_vel
         )
 
-        phi = info["phase"][0]  # [-π, π)
-        phase = jp.array([jp.cos(phi), jp.sin(phi)])
+        cos = jp.cos(info["phase"])
+        sin = jp.sin(info["phase"])
+        phase = jp.concatenate([cos, sin])
 
         linvel = self.get_local_linvel(data)
         info["rng"], noise_rng = jax.random.split(info["rng"])
@@ -421,18 +371,17 @@ class Joystick(t1_base.T1LowDimEnv):
             * self._config.noise_config.level
             * self._config.noise_config.scales.linvel
         )
-        # We will disable noisy_linvel
-        noisy_linvel = jp.zeros_like(noisy_linvel)
 
         state = jp.hstack(
             [
-                noisy_gravity,  # 3
+                noisy_linvel, # 3
                 noisy_gyro,  # 3
+                noisy_gravity,  # 3
                 info["command"],  # 3
-                phase,  # 2-dimensional
                 noisy_joint_angles - self._default_pose,  # 12
-                noisy_joint_vel * 0.1,  # 12
+                noisy_joint_vel,  # 12
                 info["last_act"],  # 12
+                phase,  # 4
             ]
         )
 
@@ -464,186 +413,6 @@ class Joystick(t1_base.T1LowDimEnv):
             "privileged_state": privileged_state,
         }
 
-    def _get_reward(
-        self,
-        data: mjx.Data,
-        action: jax.Array,
-        info: dict[str, Any],
-        metrics: dict[str, Any],
-        done: jax.Array,
-        first_contact: jax.Array,
-        contact: jax.Array,
-    ) -> dict[str, jax.Array]:
-        cmd = info["command"]
-        lin_f = info["filtered_linvel"]
-        ang_f = info["filtered_angvel"]
-
-        return {
-            # -------- positive terms --------
-            "survival": jp.array(1.0),
-            "tracking_lin_vel_x": self._reward_tracking_lin_vel_axis(0, cmd, lin_f),
-            "tracking_lin_vel_y": self._reward_tracking_lin_vel_axis(1, cmd, lin_f),
-            "tracking_ang_vel": self._reward_tracking_ang_vel(cmd, ang_f),
-            "feet_swing": self._reward_feet_swing(info["phase"], contact),
-            # -------- penalties ------------ (signed handled by scale)
-            "base_height": self._reward_base_height(data),
-            "orientation": self._cost_orientation(self.get_gravity(data)),
-            "torques": self._cost_torques(data.actuator_force),
-            "torque_tiredness": self._cost_torque_tiredness(data.actuator_force),
-            "power": self._cost_energy(data.qvel[6:], data.actuator_force),
-            "lin_vel_z": self._cost_lin_vel_z(lin_f),
-            "ang_vel_xy": self._cost_ang_vel_xy(ang_f),
-            "dof_vel": self._cost_dof_vel(data.qvel[6:]),
-            "dof_acc": self._cost_dof_acc(data.qacc[6:]),
-            "root_acc": self._cost_root_acc(data),
-            "action_rate": self._cost_action_rate(
-                action, info["last_act"], info["last_last_act"]
-            ),
-            "dof_pos_limits": self._cost_joint_pos_limits(data.qpos[7:]),
-            "collision": self._cost_collision(data),
-            "feet_slip": self._cost_feet_slip(data, contact, info),
-            "feet_vel_z": self._cost_feet_vel_z(data),
-            "feet_roll": self._cost_feet_roll(data),
-            "feet_yaw_diff": self._cost_feet_yaw_diff(data),
-            "feet_yaw_mean": self._cost_feet_yaw_mean(data),
-            "feet_distance": self._cost_feet_distance(data, info),
-        }
-
-    # Tracking rewards.
-
-    def _reward_tracking_lin_vel_axis(
-        self, axis: int, command: jax.Array, local_linvel: jax.Array
-    ) -> jax.Array:
-        """Axis–wise linear‑velocity tracker (matches Isaac Gym x & y trackers)."""
-        err = jp.square(command[axis] - local_linvel[axis])
-        return jp.exp(-err / self._config.reward_config.tracking_sigma)
-
-    def _reward_tracking_ang_vel(
-        self,
-        commands: jax.Array,
-        local_angvel: jax.Array,
-    ) -> jax.Array:
-        ang_vel_error = jp.square(commands[2] - local_angvel[2])
-        return jp.exp(-ang_vel_error / self._config.reward_config.tracking_sigma)
-
-    # Base-related rewards.
-
-    def _cost_lin_vel_z(self, local_linvel) -> jax.Array:
-        return jp.square(local_linvel[2])
-
-    def _cost_ang_vel_xy(self, local_angvel) -> jax.Array:
-        return jp.sum(jp.square(local_angvel[:2]))
-
-    def _cost_orientation(self, torso_zaxis: jax.Array) -> jax.Array:
-        return jp.sum(jp.square(torso_zaxis[:2]))
-
-    def _reward_base_height(self, data: mjx.Data) -> jax.Array:
-        h = data.qpos[2]
-        return jp.square(h - self._config.reward_config.base_height_target)
-
-    # Energy related rewards.
-
-    def _cost_torques(self, torques: jp.ndarray) -> jp.ndarray:
-        return jp.sum(jp.square(torques))
-
-    def _cost_energy(self, qvel: jp.ndarray, qfrc_actuator: jp.ndarray) -> jp.ndarray:
-        power = qvel * qfrc_actuator
-        return jp.sum(jp.where(power > 0.0, power, 0.0))
-
-    def _cost_action_rate(
-        self, act: jax.Array, last_act: jax.Array, last_last_act: jax.Array
-    ) -> jax.Array:
-        del last_last_act  # Unused.
-        c1 = jp.sum(jp.square(act - last_act))
-        return c1
-
-    def _cost_dof_acc(self, qacc: jax.Array) -> jax.Array:
-        return jp.sum(jp.square(qacc))
-
-    def _cost_dof_vel(self, qvel: jax.Array) -> jax.Array:
-        return jp.sum(jp.square(qvel))
-
-    # Other rewards.
-
-    def _cost_joint_pos_limits(self, qpos: jp.ndarray) -> jp.ndarray:
-        below = qpos < self._soft_lowers
-        above = qpos > self._soft_uppers
-        return jp.sum((below | above).astype(jp.float32))
-
-    def _reward_survival(self) -> jax.Array:
-        return jp.array(1.0)
-
-    def _cost_collision(self, data: mjx.Data) -> jax.Array:
-        return geoms_colliding(
-            data, self._left_foot_box_geom_id, self._right_foot_box_geom_id
-        )
-
-    # Pose-related rewards.
-
-    def _cost_joint_deviation_hip(self, qpos: jax.Array, cmd: jax.Array) -> jax.Array:
-        cost = jp.sum(
-            jp.abs(qpos[self._hip_indices] - self._default_pose[self._hip_indices])
-        )
-        cost *= jp.abs(cmd[1]) > 0.1
-        return cost
-
-    def _cost_joint_deviation_knee(self, qpos: jax.Array) -> jax.Array:
-        return jp.sum(
-            jp.abs(qpos[self._knee_indices] - self._default_pose[self._knee_indices])
-        )
-
-    def _cost_pose(self, qpos: jax.Array) -> jax.Array:
-        return jp.sum(jp.square(qpos - self._default_pose) * self._weights)
-
-    # Feet related rewards.
-
-    def _cost_feet_slip(
-        self,
-        data: mjx.Data,
-        contact: jp.ndarray,
-        info: dict[str, Any],
-    ) -> jp.ndarray:
-        del info  # Unused here.
-        v = data.sensordata[self._foot_linvel_sensor_adr]  # shape (2, 3)
-        speed2 = jp.sum(jp.square(v), axis=-1)  # per‑foot |v|²
-        return jp.sum(speed2 * contact)
-
-    def _cost_feet_height(
-        self,
-        swing_peak: jax.Array,
-        first_contact: jax.Array,
-        info: dict[str, Any],
-    ) -> jax.Array:
-        del info  # Unused.
-        error = swing_peak / self._config.reward_config.max_foot_height - 1.0
-        return jp.sum(jp.square(error) * first_contact)
-
-    def _reward_feet_air_time(
-        self,
-        air_time: jax.Array,
-        first_contact: jax.Array,
-        commands: jax.Array,
-        threshold_min: float = 0.2,
-        threshold_max: float = 0.5,
-    ) -> jax.Array:
-        cmd_norm = jp.linalg.norm(commands)
-        air_time = (air_time - threshold_min) * first_contact
-        air_time = jp.clip(air_time, max=threshold_max - threshold_min)
-        reward = jp.sum(air_time)
-        reward *= cmd_norm > 0.1  # No reward for zero commands.
-        return reward
-
-    def _cost_feet_distance(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
-        del info  # Unused.
-        left_foot_pos = data.site_xpos[self._feet_site_id[0]]
-        right_foot_pos = data.site_xpos[self._feet_site_id[1]]
-        base_xmat = data.site_xmat[self._site_id]
-        base_yaw = jp.arctan2(base_xmat[1, 0], base_xmat[0, 0])
-        feet_distance = jp.abs(
-            jp.cos(base_yaw) * (left_foot_pos[1] - right_foot_pos[1])
-            - jp.sin(base_yaw) * (left_foot_pos[0] - right_foot_pos[0])
-        )
-        return jp.clip(0.2 - feet_distance, min=0.0, max=0.1)
 
     def sample_command(self, rng: jax.Array) -> jax.Array:
         rng1, rng2, rng3, rng4 = jax.random.split(rng, 4)
@@ -667,14 +436,6 @@ class Joystick(t1_base.T1LowDimEnv):
             jp.hstack([lin_vel_x, lin_vel_y, ang_vel_yaw]),
         )
 
-    def _cost_torque_tiredness(self, torques: jax.Array) -> jax.Array:
-        # Σ (τ / τ_max)²  – clipped at 1 so the term stays O(1)
-        frac = jp.clip(jp.abs(torques) / self._torque_limits, 0.0, 1.0)
-        return jp.sum(jp.square(frac))
-
-    def _cost_root_acc(self, data: mjx.Data) -> jax.Array:
-        # Root‑link 6‑D acceleration² (free‑joint entries of qacc)
-        return jp.sum(jp.square(data.qacc[:6]))
 
     # ----- feet kinematics ----------------------------------------------------
     def _feet_site_xmat(self, data: mjx.Data) -> jax.Array:
@@ -689,37 +450,3 @@ class Joystick(t1_base.T1LowDimEnv):
         roll = jp.arctan2(R[:, 2, 1], R[:, 2, 2])
         yaw = jp.arctan2(R[:, 1, 0], R[:, 0, 0])
         return roll, yaw
-
-    def _cost_feet_roll(self, data: mjx.Data) -> jax.Array:
-        roll, _ = self._feet_roll_yaw(data)
-        return jp.sum(jp.square(roll))
-
-    def _cost_feet_yaw_diff(self, data: mjx.Data) -> jax.Array:
-        _, yaw = self._feet_roll_yaw(data)
-        diff = jp.fmod(yaw[1] - yaw[0] + jp.pi, 2 * jp.pi) - jp.pi
-        return jp.square(diff)
-
-    def _cost_feet_yaw_mean(self, data: mjx.Data) -> jax.Array:
-        _, feet_yaw = self._feet_roll_yaw(data)
-        base_R = data.site_xmat[self._site_id]
-        base_yaw = jp.arctan2(base_R[1, 0], base_R[0, 0])
-        mean_yaw = jp.mean(feet_yaw)
-        err = jp.fmod(base_yaw - mean_yaw + jp.pi, 2 * jp.pi) - jp.pi
-        return jp.square(err)
-
-    def _cost_feet_vel_z(self, data: mjx.Data) -> jax.Array:
-        # use the same foot linear‑velocity sensors already wired for slip
-        vz = data.sensordata[self._foot_linvel_sensor_adr][:, 2]
-        return jp.sum(jp.square(vz))
-
-    def _reward_feet_swing(
-        self, phase: jp.ndarray, feet_contact: jp.ndarray
-    ) -> jp.ndarray:
-        gait = jp.fmod(phase[0] + jp.pi, 2 * jp.pi) / (2 * jp.pi)  # scalar ∈[0,1)
-        half_window = 0.5 * self._config.reward_config.swing_period
-
-        left_swing = jp.abs(gait - 0.25) < half_window
-        right_swing = jp.abs(gait - 0.75) < half_window
-
-        # Reward when the corresponding foot is **not** in contact
-        return (left_swing & ~feet_contact[0]) + (right_swing & ~feet_contact[1])
