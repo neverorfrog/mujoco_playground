@@ -31,7 +31,7 @@ class RewardScales:
     feet_distance: float = -10.0
     feet_yaw_diff: float = -1.0
     feet_yaw_mean: float = -1.0
-    feet_roll: float = -1.0
+    feet_roll: float = -10.0
     feet_swing: float = 3.0
     
     # Other rewards
