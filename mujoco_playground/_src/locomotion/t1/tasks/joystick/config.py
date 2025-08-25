@@ -8,7 +8,6 @@ for ml_collections compatibility.
 from dataclasses import dataclass, field, asdict, replace
 from typing import Tuple, Dict, Any
 
-
 @dataclass
 class RewardScales:
     # Tracking related rewards.

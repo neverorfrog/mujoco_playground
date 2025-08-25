@@ -14,7 +14,7 @@ from mujoco_playground._src import gait
 from mujoco_playground._src.collision import geoms_colliding
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .joystick import Joystick
+    from .env import Joystick
 
 
 class JoystickRewards:

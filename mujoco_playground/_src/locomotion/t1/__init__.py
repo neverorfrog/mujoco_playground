@@ -12,3 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
+
+
+from .tasks.joystick import env as joystick
+
+__all__ = [joystick]
