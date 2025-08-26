@@ -7,10 +7,10 @@ import jax.numpy as jp
 from mujoco import mjx
 from typing import Any, TYPE_CHECKING
 from mujoco_playground._src.collision import geoms_colliding
-from mujoco_playground._src.locomotion.t1_12dof.config import RewardConfig
+from mujoco_playground._src.locomotion.t1_12dof.tasks.joystick.config import RewardConfig
 
 if TYPE_CHECKING:
-    from mujoco_playground._src.locomotion.t1_12dof.joystick import Joystick
+    from mujoco_playground._src.locomotion.t1_12dof.tasks.joystick.env import Joystick
     
 class JoystickRewards:
     """Collection of reward functions for T1 joystick locomotion tasks"""

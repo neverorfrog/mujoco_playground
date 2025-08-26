@@ -105,7 +105,7 @@ def brax_ppo_config(env_name: str) -> config_dict.ConfigDict:
   elif env_name in (
       "BerkeleyHumanoidJoystickFlatTerrain",
       "BerkeleyHumanoidJoystickRoughTerrain",
-      "T1LowDimJoystick",
+      "T1LowDimJoystickFlatTerrain",
   ):
     rl_config.num_timesteps = 150_000_000
     rl_config.num_evals = 15
@@ -143,6 +143,7 @@ def brax_ppo_config(env_name: str) -> config_dict.ConfigDict:
       "SpotFlatTerrainJoystick",
       "SpotGetup",
       "SpotJoystickGaitTracking",
+      "T1ObstacleAvoidance",
   ):
     pass  # use default config
   else:

@@ -28,8 +28,8 @@ from mujoco_playground._src import mjx_env
 from mujoco_playground._src.collision import geoms_colliding
 from mujoco_playground._src.locomotion.t1_12dof import base as t1_base
 from mujoco_playground._src.locomotion.t1_12dof import t1_constants as consts
-from mujoco_playground._src.locomotion.t1_12dof.config import JoystickConfig
-from mujoco_playground._src.locomotion.t1_12dof.rewards import JoystickRewards
+from .rewards import JoystickRewards
+from .config import JoystickConfig
 
 def _to_config_dict(obj):
     if isinstance(obj, dict):

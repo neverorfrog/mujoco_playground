@@ -16,7 +16,6 @@
 
 from typing import Any, Dict, Optional, Union
 
-from etils import epath
 import jax
 from ml_collections import config_dict
 import mujoco
@@ -42,13 +41,14 @@ class T1Env(mjx_env.MjxEnv):
   def __init__(
       self,
       xml_path: str,
+      xml_content: str,
       config: config_dict.ConfigDict,
       config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
   ) -> None:
     super().__init__(config, config_overrides)
 
     self._mj_model = mujoco.MjModel.from_xml_string(
-        epath.Path(xml_path).read_text(), assets=get_assets()
+       xml_content, assets=get_assets()
     )
     self._mj_model.opt.timestep = self.sim_dt
 

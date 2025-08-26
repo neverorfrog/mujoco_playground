@@ -17,3 +17,7 @@
 # Modifications by Younggyo Seo, 2025:
 # - Added support for 12-dof Booster T1 Joystick tasks
 # ------------------------------------------------------------------------------
+
+from .tasks.joystick import env as joystick
+
+__all__ = [joystick]

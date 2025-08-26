@@ -1,0 +1,82 @@
+<mujoco model="t1 lowdim feetonly obstacle scene">
+  <!-- Base robot definition -->
+  <include file="t1_12dof.xml"/>
+
+  <!-- Camera/statistics similar to flat terrain scene (adjust center/extent to arena) -->
+  <statistic center="0.0 0.0 0.7" extent="3.0" meansize="0.04"/>
+
+  <visual>
+    <headlight diffuse="0.55 0.55 0.55" ambient="0.45 0.45 0.45" specular="0.35 0.35 0.35"/>
+    <rgba force="1 0 0 1"/>
+    <global azimuth="-130" elevation="-15"/>
+    <map force="0.01"/>
+    <scale forcewidth="0.3" contactwidth="0.5" contactheight="0.2"/>
+    <quality shadowsize="8192"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="1 1 1" rgb2="1 1 1" width="800" height="800"/>
+    <texture type="2d" name="groundplane" builtin="checker" rgb1="0.5 0.5 0.5" rgb2="0.28 0.30 0.34" width="600" height="600"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="2 2" reflectance="0"/>
+    <material name="wall_mat" rgba="0.25 0.25 0.28 1"/>
+    <material name="obstacle_mat" rgba="0.8 0.3 0.1 1"/>
+    <material name="goal_mat" rgba="0 0.8 0.2 1"/>
+  </asset>
+
+
+  <worldbody>
+    <!-- Ground plane -->
+    <geom name="floor" size="0 0 0.01" type="plane" material="groundplane" priority="1" friction="0.8" contype="1" conaffinity="2" condim="3"/>
+
+    <!-- Vertical walls (static) -->
+    <!-- Arena half extents (ARENA_X=4.0, ARENA_Y=4.0); wall thickness=0.04, height=0.5 -->
+    <geom name="wall_pos_x" type="box" size="0.02 4.0 0.25" pos="4.0 0 0.25" material="wall_mat"
+          contype="1" conaffinity="2" friction="0.8 0.1 0.01"/>
+    <geom name="wall_neg_x" type="box" size="0.02 4.0 0.25" pos="-4.0 0 0.25" material="wall_mat"
+          contype="1" conaffinity="2" friction="0.8 0.1 0.01"/>
+    <geom name="wall_pos_y" type="box" size="4.0 0.02 0.25" pos="0.0 4.0 0.25" material="wall_mat"
+          contype="1" conaffinity="2" friction="0.8 0.1 0.01"/>
+    <geom name="wall_neg_y" type="box" size="4.0 0.02 0.25" pos="0.0 -4.0 0.25" material="wall_mat"
+          contype="1" conaffinity="2" friction="0.8 0.1 0.01"/>
+
+    <!-- STATIC OBSTACLES (example layout) -->
+    <!-- Use cylinders (radius, radius, half-height). Height just above ground to ensure robust contact. -->
+    <geom name="obstacle_0" type="cylinder" size="0.2 0.2" pos="1.25 0.75 0.125" material="obstacle_mat"
+          contype="1" conaffinity="2" friction="0.9 0.1 0.01"/>
+    <!-- <geom name="obstacle_1" type="cylinder" size="0.2 0.2" pos="1.6 -0.3 0.125" material="obstacle_mat"
+          contype="1" conaffinity="2" friction="0.9 0.1 0.01"/>
+    <geom name="obstacle_2" type="cylinder" size="0.2 0.2" pos="2.3 0.6 0.125" material="obstacle_mat"
+          contype="1" conaffinity="2" friction="0.9 0.1 0.01"/> -->
+
+    <!-- GOAL & START SITES -->
+    <!-- Start position (robot free joint initial qpos may override). Keep site for reference/visualization. -->
+    <site name="start" pos="0 0 0.01" size="0.05" type="sphere" rgba="0.2 0.2 0.9 0.6"/>
+    <!-- Goal site (reach when COM within goal_radius ~0.25 m). -->
+    <site name="goal" pos="3.0 2.0 0.01" size="0.08" type="sphere" material="goal_mat" rgba="0 0.8 0.2 0.9"/>
+  </worldbody>
+
+
+
+   <keyframe>
+      <key name="home"
+      qpos="
+      0 0 0.665
+      1 0 0 0
+      0 0
+      0 -1.4 0 -0.4
+      0 1.4 0 0.4
+      0
+      -0.2 0 0 0.4 -0.2 0
+      -0.2 0 0 0.4 -0.2 0
+      "
+      ctrl="
+      0 0
+      0 -1.4 0 -0.4
+      0 1.4 0 0.4
+      0
+      -0.2 0 0 0.4 -0.2 0
+      -0.2 0 0 0.4 -0.2 0
+      "/>
+   </keyframe>
+
+</mujoco>
