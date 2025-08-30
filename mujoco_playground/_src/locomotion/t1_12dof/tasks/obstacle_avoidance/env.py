@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Joystick task for Booster T1."""
+"""Navigation task for Booster T1."""
 
+import copy
+import re
 from typing import Any, Dict, Optional, Union
 
 import jax
@@ -23,12 +25,14 @@ from mujoco import mjx
 from mujoco.mjx._src import math
 import numpy as np
 
+import xml.etree.ElementTree as ET
+
 from mujoco_playground._src import mjx_env
 from mujoco_playground._src.collision import geoms_colliding
 from mujoco_playground._src.locomotion.t1_12dof import base as t1_base
 from mujoco_playground._src.locomotion.t1_12dof import t1_constants as consts
-from .rewards import JoystickRewards
-from .config import JoystickConfig
+from .rewards import ObstacleAvoidanceRewards
+from .config import ObstacleAvoidanceConfig
 
 def _to_config_dict(obj):
     if isinstance(obj, dict):
@@ -38,9 +42,9 @@ def _to_config_dict(obj):
     return obj
 
 def default_config() -> config_dict.ConfigDict:
-    return _to_config_dict(JoystickConfig().to_dict())
+    return _to_config_dict(ObstacleAvoidanceConfig().to_dict())
 
-class Joystick(t1_base.T1LowDimEnv):
+class ObstacleAvoidance(t1_base.T1LowDimEnv):
     """Track a joystick command."""
 
     def __init__(
@@ -49,14 +53,18 @@ class Joystick(t1_base.T1LowDimEnv):
         config: config_dict.ConfigDict = default_config(),
         config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
     ):
+        xml_path = consts.task_to_xml(task).as_posix()
+        xml_content = self._setup_scene(xml_path, config)
+        
         super().__init__(
-            xml_path=consts.task_to_xml(task).as_posix(),
+            xml_path=xml_path,
+            xml_content=xml_content,
             config=config,
             config_overrides=config_overrides,
         )
         self._post_init()
-        self.rewards = JoystickRewards(self)
-
+        self.rewards = ObstacleAvoidanceRewards(self)
+        
     def _post_init(self) -> None:
         self._init_q = jp.array(self._mj_model.keyframe("home").qpos)
         self._default_pose = jp.array(self._mj_model.keyframe("home").qpos[7:])
@@ -123,27 +131,19 @@ class Joystick(t1_base.T1LowDimEnv):
         #   unlimited → treat as very large so the penalty goes to zero
         self._torque_limits = jp.where(force_limited, hi, jp.full_like(hi, 1e6))
 
-    def _reset_if_outside_bounds(self, state: mjx_env.State) -> mjx_env.State:
-        qpos = state.data.qpos
-        new_x = jp.where(jp.abs(qpos[0]) > 9.5, 0.0, qpos[0])
-        new_y = jp.where(jp.abs(qpos[1]) > 9.5, 0.0, qpos[1])
-        qpos = qpos.at[0:2].set(jp.array([new_x, new_y]))
-        state = state.replace(data=state.data.replace(qpos=qpos))
-        return state
-
     def reset(self, rng: jax.Array) -> mjx_env.State:
         qpos = self._init_q
         qvel = jp.zeros(self.mjx_model.nv)
 
-        # x=+U(-0.5, 0.5), y=+U(-0.5, 0.5), yaw=U(-3.14, 3.14).
-        rng, key = jax.random.split(rng)
-        dxy = jax.random.uniform(key, (2,), minval=-0.5, maxval=0.5)
-        qpos = qpos.at[0:2].set(qpos[0:2] + dxy)
-        rng, key = jax.random.split(rng)
-        yaw = jax.random.uniform(key, (1,), minval=-3.14, maxval=3.14)
-        quat = math.axis_angle_to_quat(jp.array([0, 0, 1]), yaw)
-        new_quat = math.quat_mul(qpos[3:7], quat)
-        qpos = qpos.at[3:7].set(new_quat)
+        # x=+U(-0.1, 0.1), y=+U(-0.1, 0.1), yaw=U(-3.14, 3.14).
+        # rng, key = jax.random.split(rng)
+        # dxy = jax.random.uniform(key, (2,), minval=-0.1, maxval=0.1) # CONFIG
+        # qpos = qpos.at[0:2].set(qpos[0:2] + dxy)
+        # rng, key = jax.random.split(rng)
+        # yaw = jax.random.uniform(key, (1,), minval=-3.14, maxval=3.14)
+        # quat = math.axis_angle_to_quat(jp.array([0, 0, 1]), yaw)
+        # new_quat = math.quat_mul(qpos[3:7], quat)
+        # qpos = qpos.at[3:7].set(new_quat)
 
         # qpos[7:]=*U(0.5, 1.5)
         rng, key = jax.random.split(rng)
@@ -163,8 +163,10 @@ class Joystick(t1_base.T1LowDimEnv):
         phase_dt = 2 * jp.pi * self.dt * gait_freq
         phase = jp.array([0, jp.pi])
 
+        goal = jp.array(self._config.scene_config.goal_position)
         rng, cmd_rng = jax.random.split(rng)
-        cmd = self.sample_command(cmd_rng)
+        cmd = self.sample_command(goal, cmd_rng)
+        # cmd = self.get_command(goal)
 
         # Sample push interval.
         rng, push_rng = jax.random.split(rng)
@@ -176,6 +178,7 @@ class Joystick(t1_base.T1LowDimEnv):
         push_interval_steps = jp.round(push_interval / self.dt).astype(jp.int32)
 
         info = {
+            "goal": jp.array([goal[0], goal[1]]), # ENV
             "rng": rng,
             "step": 0,
             "command": cmd,
@@ -271,7 +274,7 @@ class Joystick(t1_base.T1LowDimEnv):
         state.info["swing_peak"] = jp.maximum(state.info["swing_peak"], p_fz)
 
         obs = self._get_obs(data, state.info, contact)
-        done = self._get_termination(data)
+        done = self._get_termination(data, state.info)
 
         rewards = self.rewards.get(
             data, action, state.info, state.metrics, done, first_contact, contact
@@ -294,11 +297,6 @@ class Joystick(t1_base.T1LowDimEnv):
         state.info["last_last_act"] = state.info["last_act"]
         state.info["last_act"] = action
         state.info["rng"], cmd_rng = jax.random.split(state.info["rng"])
-        state.info["command"] = jp.where(
-            state.info["step"] > 500,
-            self.sample_command(cmd_rng),
-            state.info["command"],
-        )
         state.info["step"] = jp.where(
             done | (state.info["step"] > 500),
             0,
@@ -315,9 +313,10 @@ class Joystick(t1_base.T1LowDimEnv):
         state = state.replace(data=data, obs=obs, reward=reward, done=done)
         return state
 
-    def _get_termination(self, data: mjx.Data) -> jax.Array:
+    def _get_termination(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
         fall_termination = self.get_gravity(data)[-1] < 0.0
-        return fall_termination | jp.isnan(data.qpos).any() | jp.isnan(data.qvel).any()
+        goal_termination = jp.linalg.norm(data.qpos[:2] - info["goal"]) < 0.3 # ENV
+        return fall_termination | jp.isnan(data.qpos).any() | jp.isnan(data.qvel).any() | goal_termination
 
     def _get_obs(
         self, data: mjx.Data, info: dict[str, Any], contact: jax.Array
@@ -370,6 +369,9 @@ class Joystick(t1_base.T1LowDimEnv):
             * self._config.noise_config.level
             * self._config.noise_config.scales.linvel
         )
+        
+        # ENV
+        # TODO: Distance and angle to obstacles 
 
         state = jp.hstack(
             [
@@ -392,6 +394,7 @@ class Joystick(t1_base.T1LowDimEnv):
         privileged_state = jp.hstack(
             [
                 state,
+                info["goal"], # 2 ENV
                 gyro,  # 3
                 accelerometer,  # 3
                 gravity,  # 3
@@ -413,20 +416,21 @@ class Joystick(t1_base.T1LowDimEnv):
         }
 
 
-    def sample_command(self, rng: jax.Array) -> jax.Array:
-        rng1, rng2, rng3, rng4 = jax.random.split(rng, 4)
+    def get_command(self, goal: jax.Array) -> jax.Array:
+        goal_dist = jp.linalg.norm(goal) + 1e-8
+        goal_dir = goal / goal_dist
+        return jp.hstack([goal_dir[0] * 0.5, goal_dir[1] * 0.5, 0.0]) # ENV
 
-        lin_vel_x = jax.random.uniform(
-            rng1, minval=self._config.lin_vel_x[0], maxval=self._config.lin_vel_x[1]
-        )
-        lin_vel_y = jax.random.uniform(
-            rng2, minval=self._config.lin_vel_y[0], maxval=self._config.lin_vel_y[1]
-        )
-        ang_vel_yaw = jax.random.uniform(
-            rng3,
-            minval=self._config.ang_vel_yaw[0],
-            maxval=self._config.ang_vel_yaw[1],
-        )
+
+    def sample_command(self, goal: jax.Array, rng: jax.Array) -> jax.Array:
+        rng1, rng2, rng3, rng4 = jax.random.split(rng, 4)
+        
+        goal_dist = jp.linalg.norm(goal) + 1e-8
+        goal_dir = goal / goal_dist
+
+        lin_vel_x = 0.5
+        lin_vel_y = 0.0
+        ang_vel_yaw = 0.0
 
         # With 10% chance, set everything to zero.
         return jp.where(
@@ -434,6 +438,44 @@ class Joystick(t1_base.T1LowDimEnv):
             jp.zeros(3),
             jp.hstack([lin_vel_x, lin_vel_y, ang_vel_yaw]),
         )
+
+        
+    def _setup_scene(self, xml_path: str, config: dict) -> str:
+        """Setup the Mujoco environment by modifying the XML file"""
+        with open(xml_path, "r") as file:
+            xml = file.read()
+
+        # Overwrite the target and obstacle position in the XML file
+        tree = copy.deepcopy(ET.ElementTree(ET.fromstring(xml)))
+        root = tree.getroot()
+        obstacle_pattern = re.compile(r"obstacle_\d+")
+        goal_pattern = re.compile(r"goal")
+
+        obstacle_positions = config.scene_config.obstacle_positions
+        goal_position = config.scene_config.goal_position
+
+        for geom in root.findall(".//geom"):
+            if obstacle_pattern.match(geom.get("name", "")):
+                print(f"Found obstacle: {geom.get('name')}")
+                obstacle_index = int(geom.get("name").replace("obstacle_", ""))
+                try:
+                    new_obstacle_pos = np.array(
+                        [*obstacle_positions[obstacle_index], 0.0]
+                    )
+                    obstacle_positions[obstacle_index] = new_obstacle_pos
+                    geom.set("pos", " ".join(map(str, new_obstacle_pos)))
+                    print(
+                        f"Set new position for {geom.get('name')}: {new_obstacle_pos}"
+                    )
+                except IndexError:
+                    new_obstacle_pos = np.array([2.0, 0.0, 0.0])
+                    geom.set("pos", " ".join(map(str, new_obstacle_pos)))
+
+        for site in root.findall(".//site"):
+            if goal_pattern.match(site.get("name", "")):
+                site.set("pos", " ".join(map(str, goal_position)))
+
+        return ET.tostring(root, encoding="unicode")
 
 
     # ----- feet kinematics ----------------------------------------------------

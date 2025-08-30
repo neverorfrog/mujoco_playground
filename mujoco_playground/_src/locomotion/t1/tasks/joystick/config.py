@@ -73,7 +73,7 @@ class NoiseConfig:
 
 @dataclass
 class PushConfig:
-    enable: bool = True
+    enable: bool = False
     interval_range: Tuple[float, float] = (5.0, 10.0)
     magnitude_range: Tuple[float, float] = (0.1, 1.0)
 

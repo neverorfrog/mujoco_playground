@@ -40,8 +40,9 @@ from mujoco_playground._src.locomotion.spot import joystick_gait_tracking as spo
 from mujoco_playground._src.locomotion.t1 import joystick as t1_joystick
 from mujoco_playground._src.locomotion.t1 import randomize as t1_randomize
 from mujoco_playground._src.locomotion.t1 import obstacle_avoidance as t1_obstacle_avoidance
-from mujoco_playground._src.locomotion.t1_12dof.tasks.joystick import env as t1_12dof_joystick
+from mujoco_playground._src.locomotion.t1_12dof import joystick as t1_12dof_joystick
 from mujoco_playground._src.locomotion.t1_12dof import randomize as t1_12dof_randomize
+from mujoco_playground._src.locomotion.t1_12dof import obstacle_avoidance as t1_12dof_obstacle_avoidance
 
 
 _envs = {
@@ -89,6 +90,9 @@ _envs = {
     "T1ObstacleAvoidance": functools.partial(
         t1_obstacle_avoidance.ObstacleAvoidance, task="obstacle_avoidance"
     ),
+    "T1LowDimObstacleAvoidance" : functools.partial(
+        t1_12dof_obstacle_avoidance.ObstacleAvoidance, task="obstacle_avoidance"
+    )
 }
 
 _cfgs = {
@@ -116,6 +120,7 @@ _cfgs = {
     "T1JoystickRoughTerrain": t1_joystick.default_config,
     "T1LowDimJoystickFlatTerrain": t1_12dof_joystick.default_config,
     "T1ObstacleAvoidance": t1_obstacle_avoidance.default_config,
+    "T1LowDimObstacleAvoidance": t1_12dof_obstacle_avoidance.default_config,
 }
 
 _randomizer = {
@@ -136,6 +141,7 @@ _randomizer = {
     "T1JoystickRoughTerrain": t1_randomize.domain_randomize,
     "T1ObstacleAvoidance": t1_randomize.domain_randomize,
     "T1LowDimJoystickFlatTerrain": t1_12dof_randomize.domain_randomize,
+    "T1LowDimObstacleAvoidance": t1_12dof_randomize.domain_randomize,
 }
 
 

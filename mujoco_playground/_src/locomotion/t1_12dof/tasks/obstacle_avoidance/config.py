@@ -8,60 +8,59 @@ from typing import List, Tuple, Dict, Any
 @dataclass
 class SceneConfig:
     obstacle_positions: List[Tuple[float, float]] = field(default_factory=lambda: 
-        [(0.75, 0.25), (-0.02, 0.1), (0.12, 0.17)])
-    goal_position: Tuple[float, float] = field(default_factory=lambda: (2.25, 0.0))
+        [(1.75, 0.25), (-0.02, 0.1), (0.12, 0.17)])
+    goal_position: Tuple[float, float] = field(default_factory=lambda: (2.25, 0.0, 0.0))
+    
+@dataclass
+class RewardScales:
+    """Reward scaling factors for different reward components."""
+    # Tracking related rewards
+    tracking_lin_vel_x: float = 1.0
+    tracking_lin_vel_y: float = 1.0
+    tracking_ang_vel: float = 0.0
+    tracking_goal: float = 2.0 # CONFIG: this shouldn't be too high
+    
+    # Base related rewards
+    lin_vel_z: float = -2.0
+    ang_vel_xy: float = -0.2
+    orientation: float = -5.0
+    base_height: float = -20.0
+    
+    # Energy related rewards
+    torque_tiredness: float = -0.5e-2
+    torques: float = -1.0e-4
+    action_rate: float = -0.5
+    power: float = -1.0e-3
+    dof_acc: float = -1.0e-7
+    dof_vel: float = -1.0e-4
+    
+    # Feet related rewards
+    feet_slip: float = -0.1
+    feet_air_time: float = 2.0
+    feet_distance: float = -10.0
+    feet_yaw_diff: float = -1.0
+    feet_yaw_mean: float = -1.0
+    feet_roll: float = -10.0
+    feet_swing: float = 3.0
+    
+    # Other rewards
+    survival: float = 0.05
+    root_acc: float = -1.0e-4
+    dof_pos_limits: float = -1.0
+    collision: float = -10.0
+    
+@dataclass
+class RewardConfig:
+    """Configuration for reward computation."""
+    scales: RewardScales = field(default_factory=RewardScales)
+    tracking_sigma: float = 0.25
+    base_height_target: float = 0.68
+    swing_period: float = 0.2
     
 
 @dataclass
-class RewardScales:
-    # Tracking related rewards.
-    tracking_lin_vel: float = 1.0
-    tracking_ang_vel: float = 0.5
-
-    # Base related rewards.
-    lin_vel_z: float = 0.0
-    ang_vel_xy: float = -0.15
-    orientation: float = -1.0
-    base_height: float = 0.0
-
-    # Energy related rewards.
-    torques: float = 0.0
-    action_rate: float = 0.0
-    energy: float = -1.0e-3
-    dof_acc: float = -1.0e-7
-    dof_vel: float = -1.0e-4
-
-    # Feet related rewards.
-    feet_clearance: float = 0.0
-    feet_air_time: float = 2.0
-    feet_slip: float = -0.25
-    feet_height: float = 0.0
-    feet_phase: float = 1.0
-
-    # Other rewards.
-    stand_still: float = 0.0
-    alive: float = 0.25
-    termination: float = 0.0
-
-    # Pose related rewards.
-    joint_deviation_knee: float = -0.1
-    joint_deviation_hip: float = -0.1
-    dof_pos_limits: float = -1.0
-    pose: float = -1.0
-    feet_distance: float = -1.0
-    collision: float = -1.0
-
-
-@dataclass
-class RewardConfig:
-    scales: RewardScales = field(default_factory=RewardScales)
-    tracking_sigma: float = 0.25
-    max_foot_height: float = 0.12
-    base_height_target: float = 0.665
-
-
-@dataclass
 class NoiseScales:
+    """Noise scaling factors for different sensor types."""
     joint_pos: float = 0.03
     joint_vel: float = 1.5
     gravity: float = 0.05
@@ -71,12 +70,14 @@ class NoiseScales:
 
 @dataclass
 class NoiseConfig:
-    level: float = 1.0  # Set to 0.0 to disable noise.
+    """Configuration for sensor noise."""
+    level: float = 1.0  # Set to 0.0 to disable noise
     scales: NoiseScales = field(default_factory=NoiseScales)
 
 
 @dataclass
 class PushConfig:
+    """Configuration for external push disturbances."""
     enable: bool = False
     interval_range: Tuple[float, float] = (5.0, 10.0)
     magnitude_range: Tuple[float, float] = (0.1, 1.0)
@@ -84,27 +85,30 @@ class PushConfig:
 
 @dataclass
 class ObstacleAvoidanceConfig:
-    # Simulation parameters.
+    """Main configuration for the obstacle avoidance task."""
+    # Simulation parameters
     ctrl_dt: float = 0.02
     sim_dt: float = 0.002
-    episode_length: int = 1000
+    episode_length: int = 500
     action_repeat: int = 1
     action_scale: float = 1.0
     history_len: int = 1
     soft_joint_pos_limit_factor: float = 0.95
-
-    # Sub-configurations.
+    
+    # Sub-configurations
     scene_config: SceneConfig = field(default_factory=SceneConfig)
     noise_config: NoiseConfig = field(default_factory=NoiseConfig)
     reward_config: RewardConfig = field(default_factory=RewardConfig)
     push_config: PushConfig = field(default_factory=PushConfig)
-
-    # Command velocity ranges.
+    
+    # Command velocity ranges
     lin_vel_x: Tuple[float, float] = (-1.0, 1.0)
     lin_vel_y: Tuple[float, float] = (-0.8, 0.8)
     ang_vel_yaw: Tuple[float, float] = (-1.0, 1.0)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict:
+        """Convert to dictionary format for compatibility with ml_collections."""
+        from dataclasses import asdict
         return asdict(self)
 
     @classmethod
