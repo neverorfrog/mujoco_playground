@@ -42,15 +42,23 @@ class T1LowDimEnv(mjx_env.MjxEnv):
     def __init__(
         self,
         xml_path: str,
-        xml_content: str,
+        xml_content: Optional[str],
         config: config_dict.ConfigDict,
         config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
     ) -> None:
         super().__init__(config, config_overrides)
 
-        self._mj_model = mujoco.MjModel.from_xml_string(
-            xml_content, assets=get_assets()
-        )
+        self._model_assets = get_assets()
+  
+        if xml_content is not None:
+            self._mj_model = mujoco.MjModel.from_xml_string(
+                xml_content, assets=self._model_assets
+            )
+        else:
+            self._mj_model = mujoco.MjModel.from_xml_string(
+                epath.Path(xml_path).read_text(), assets=self._model_assets
+            )
+            
         self._mj_model.opt.timestep = self.sim_dt
 
         self._mj_model.vis.global_.offwidth = 3840

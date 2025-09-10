@@ -51,6 +51,7 @@ class Joystick(t1_base.T1LowDimEnv):
     ):
         super().__init__(
             xml_path=consts.task_to_xml(task).as_posix(),
+            xml_content=None,
             config=config,
             config_overrides=config_overrides,
         )

@@ -202,6 +202,8 @@ def rsl_rl_config(env_name: str) -> config_dict.ConfigDict:
       "BerkeleyHumanoidJoystickFlatTerrain",
       "G1Joystick",
       "Go1JoystickFlatTerrain",
+      "T1LowDimObstacleAvoidance",
+      "T1LowDimJoystickFlatTerrain",
   ):
     rl_config.max_iterations = 1000
   if env_name == "Go1JoystickFlatTerrain":
