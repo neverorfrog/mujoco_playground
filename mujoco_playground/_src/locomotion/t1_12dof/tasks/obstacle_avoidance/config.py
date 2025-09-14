@@ -17,9 +17,10 @@ class RewardScales:
     # Tracking related rewards
     tracking_lin_vel_x: float = 1.0
     tracking_lin_vel_y: float = 1.0
-    tracking_ang_vel: float = 0.0
-    tracking_goal: float = 2.0 # CONFIG: this shouldn't be too high
-    
+    tracking_ang_vel: float = 2.0
+    cost_to_goal_x: float = -0.0 # CONFIG: this shouldn't be too high
+    cost_to_goal_y: float = -0.0 # CONFIG: this shouldn't be too high
+
     # Base related rewards
     lin_vel_z: float = -2.0
     ang_vel_xy: float = -0.2
@@ -28,7 +29,7 @@ class RewardScales:
     
     # Energy related rewards
     torque_tiredness: float = -0.5e-2
-    torques: float = -1.0e-4
+    torques: float = -1.0e-3
     action_rate: float = -0.5
     power: float = -1.0e-3
     dof_acc: float = -1.0e-7
@@ -42,12 +43,12 @@ class RewardScales:
     feet_yaw_mean: float = -1.0
     feet_roll: float = -10.0
     feet_swing: float = 3.0
+    feet_collision: float = -10.0
     
     # Other rewards
-    survival: float = 0.05
+    survival: float = 0.1
     root_acc: float = -1.0e-4
     dof_pos_limits: float = -1.0
-    collision: float = -10.0
     
 @dataclass
 class RewardConfig:

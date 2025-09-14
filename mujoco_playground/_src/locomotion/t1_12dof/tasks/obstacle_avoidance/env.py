@@ -148,12 +148,12 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         # qpos[7:]=*U(0.5, 1.5)
         rng, key = jax.random.split(rng)
         qpos = qpos.at[7:].set(
-            qpos[7:] * jax.random.uniform(key, (12,), minval=0.5, maxval=1.5)
+            qpos[7:] * jax.random.uniform(key, (12,), minval=0.8, maxval=1.2)
         )
 
         # d(xyzrpy)=U(-0.5, 0.5)
         rng, key = jax.random.split(rng)
-        qvel = qvel.at[0:6].set(jax.random.uniform(key, (6,), minval=-0.5, maxval=0.5))
+        qvel = qvel.at[0:6].set(jax.random.uniform(key, (6,), minval=-0.2, maxval=0.2))
 
         data = mjx_env.init(self.mjx_model, qpos=qpos, qvel=qvel, ctrl=qpos[7:])
 
@@ -165,8 +165,7 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
 
         goal = jp.array(self._config.scene_config.goal_position)
         rng, cmd_rng = jax.random.split(rng)
-        cmd = self.sample_command(goal, cmd_rng)
-        # cmd = self.get_command(goal)
+        cmd = self.get_command(goal, cmd_rng)
 
         # Sample push interval.
         rng, push_rng = jax.random.split(rng)
@@ -178,7 +177,8 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         push_interval_steps = jp.round(push_interval / self.dt).astype(jp.int32)
 
         info = {
-            "goal": jp.array([goal[0], goal[1]]), # ENV
+            "abs_goal": jp.array([goal[0], goal[1]]), # ENV
+            "goal": jp.array([goal[0], goal[1]]) - data.qpos[:2],
             "rng": rng,
             "step": 0,
             "command": cmd,
@@ -315,7 +315,7 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
 
     def _get_termination(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
         fall_termination = self.get_gravity(data)[-1] < 0.0
-        goal_termination = jp.linalg.norm(data.qpos[:2] - info["goal"]) < 0.3 # ENV
+        goal_termination = jp.linalg.norm(info["goal"]) < 0.3 # ENV
         return fall_termination | jp.isnan(data.qpos).any() | jp.isnan(data.qvel).any() | goal_termination
 
     def _get_obs(
@@ -372,12 +372,23 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         
         # ENV
         # TODO: Distance and angle to obstacles 
+        
+        # ENV: including feedback to generate command
+        # info["command"] is the desired (x, y, yaw) velocity
+        # convert goal to be relative to robot's position
+        info["goal"] = info["abs_goal"] - data.qpos[:2]
+        # info["goal"] = jp.where(
+        #     jax.random.bernoulli(info["rng"], p=0.1),
+        #     jp.zeros_like(info["goal"]),
+        #     info["goal"],
+        # )
 
         state = jp.hstack(
             [
                 noisy_linvel, # 3
                 noisy_gyro,  # 3
                 noisy_gravity,  # 3
+                info["goal"],  # 2 ENV
                 info["command"],  # 3
                 noisy_joint_angles - self._default_pose,  # 12
                 noisy_joint_vel,  # 12
@@ -394,7 +405,6 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         privileged_state = jp.hstack(
             [
                 state,
-                info["goal"], # 2 ENV
                 gyro,  # 3
                 accelerometer,  # 3
                 gravity,  # 3
@@ -416,28 +426,20 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         }
 
 
-    def get_command(self, goal: jax.Array) -> jax.Array:
-        goal_dist = jp.linalg.norm(goal) + 1e-8
-        goal_dir = goal / goal_dist
-        return jp.hstack([goal_dir[0] * 0.5, goal_dir[1] * 0.5, 0.0]) # ENV
-
-
-    def sample_command(self, goal: jax.Array, rng: jax.Array) -> jax.Array:
+    def get_command(self, goal: jax.Array, rng: jax.Array) -> jax.Array:
         rng1, rng2, rng3, rng4 = jax.random.split(rng, 4)
         
         goal_dist = jp.linalg.norm(goal) + 1e-8
         goal_dir = goal / goal_dist
 
-        lin_vel_x = 0.5
+        lin_vel_x = jax.random.uniform(rng1, minval=0.0, maxval=1.0) * goal_dir[0]
+        lin_vel_x = jp.clip(lin_vel_x, -self._config.lin_vel_x[1], self._config.lin_vel_x[1])
+        
+        jax.debug.print("get_command: goal={g}, goal_dist={d}, goal_dir={gd}, lin_vel_x={lvx}", g=goal, d=goal_dist, gd=goal_dir, lvx=lin_vel_x)
         lin_vel_y = 0.0
         ang_vel_yaw = 0.0
-
-        # With 10% chance, set everything to zero.
-        return jp.where(
-            jax.random.bernoulli(rng4, p=0.1),
-            jp.zeros(3),
-            jp.hstack([lin_vel_x, lin_vel_y, ang_vel_yaw]),
-        )
+        
+        return jp.array([lin_vel_x, lin_vel_y, ang_vel_yaw])
 
         
     def _setup_scene(self, xml_path: str, config: dict) -> str:

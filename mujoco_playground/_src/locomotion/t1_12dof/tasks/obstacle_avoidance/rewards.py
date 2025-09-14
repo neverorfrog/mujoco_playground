@@ -15,6 +15,7 @@ from mujoco import mjx
 from mujoco_playground._src import gait
 from mujoco_playground._src.collision import geoms_colliding
 from .config import RewardConfig
+from .planner import FootstepPlanner
 
 if TYPE_CHECKING:  # pragma: no cover
     from .env import ObstacleAvoidance
@@ -25,6 +26,7 @@ class ObstacleAvoidanceRewards:
     def __init__(self, env: 'ObstacleAvoidance'):
         self.env = env
         self.config = RewardConfig()
+        self.planner = FootstepPlanner()
         
     def get(
         self,
@@ -47,8 +49,9 @@ class ObstacleAvoidanceRewards:
             "tracking_lin_vel_x": self._reward_tracking_lin_vel_axis(0, cmd, lin_f),
             "tracking_lin_vel_y": self._reward_tracking_lin_vel_axis(1, cmd, lin_f),
             "tracking_ang_vel": self._reward_tracking_ang_vel(cmd, ang_f),
-            "tracking_goal": self._reward_tracking_goal(data, info),
-            
+            "cost_to_goal_x": self._cost_to_goal_axis(0, info),
+            "cost_to_goal_y": self._cost_to_goal_axis(1, info),
+
             # Base-related rewards.
             "lin_vel_z": self._cost_lin_vel_z(lin_f),
             "ang_vel_xy": self._cost_ang_vel_xy(ang_f),
@@ -75,7 +78,7 @@ class ObstacleAvoidanceRewards:
             "feet_roll": self._cost_feet_roll(data),
             "feet_yaw_diff": self._cost_feet_yaw_diff(data),
             "feet_yaw_mean": self._cost_feet_yaw_mean(data),
-            "collision": self._cost_collision(data),
+            "feet_collision": self._cost_feet_collision(data),
             
             # Pose related rewards
             "dof_pos_limits": self._cost_joint_pos_limits(data.qpos[7:]),
@@ -105,10 +108,9 @@ class ObstacleAvoidanceRewards:
         ang_vel_error = jp.square(commands[2] - local_angvel[2])
         return jp.exp(-ang_vel_error / self.config.tracking_sigma)
 
-    def _reward_tracking_goal(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
+    def _cost_to_goal_axis(self, axis: int, info: dict[str, Any]) -> jax.Array:
         """Tracks the goal position by doing a negative exponential of the squared error"""
-        goal_error = jp.square(info["goal"] - data.qpos[:2])
-        return jp.exp(-goal_error)[0]
+        return jp.square(info["goal"][axis])
 
     # Base related rewards
     def _cost_lin_vel_z(self, local_linvel) -> jax.Array:
@@ -235,7 +237,7 @@ class ObstacleAvoidanceRewards:
         err = jp.fmod(base_yaw - mean_yaw + jp.pi, 2 * jp.pi) - jp.pi
         return jp.square(err)
     
-    def _cost_collision(self, data: mjx.Data) -> jax.Array:
+    def _cost_feet_collision(self, data: mjx.Data) -> jax.Array:
         """
             Checks if the left and right foot geometry boxes are colliding
             with each other, which would be undesirable behavior (feet shouldn't overlap).
