@@ -16,6 +16,7 @@ from mujoco_playground._src import gait
 from mujoco_playground._src.collision import geoms_colliding
 from .config import RewardConfig
 from .planner import FootstepPlanner
+from .abstract_map import AbstractMap
 
 if TYPE_CHECKING:  # pragma: no cover
     from .env import ObstacleAvoidance
@@ -49,8 +50,9 @@ class ObstacleAvoidanceRewards:
             "tracking_lin_vel_x": self._reward_tracking_lin_vel_axis(0, cmd, lin_f),
             "tracking_lin_vel_y": self._reward_tracking_lin_vel_axis(1, cmd, lin_f),
             "tracking_ang_vel": self._reward_tracking_ang_vel(cmd, ang_f),
-            "cost_to_goal_x": self._cost_to_goal_axis(0, info),
-            "cost_to_goal_y": self._cost_to_goal_axis(1, info),
+            # "cost_to_goal_distance": self._cost_to_goal_distance(info),
+            # "cost_to_goal_orientation": self._cost_to_goal_orientation(data, info),
+            # "reward_abstract_map": self._reward_abstract_map(data, info),
 
             # Base-related rewards.
             "lin_vel_z": self._cost_lin_vel_z(lin_f),
@@ -108,9 +110,21 @@ class ObstacleAvoidanceRewards:
         ang_vel_error = jp.square(commands[2] - local_angvel[2])
         return jp.exp(-ang_vel_error / self.config.tracking_sigma)
 
-    def _cost_to_goal_axis(self, axis: int, info: dict[str, Any]) -> jax.Array:
-        """Tracks the goal position by doing a negative exponential of the squared error"""
-        return jp.square(info["goal"][axis])
+    def _cost_to_goal_distance(self, info: dict[str, Any]) -> jax.Array:
+        """Tracks the goal distance to the goal"""
+        return jp.sqrt(jp.square(info["rel_goal"][0]) + jp.square(info["rel_goal"][1]))
+    
+    def _cost_to_goal_orientation(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
+        """Penalty for yaw misalignment between base heading and the direction to the goal."""
+        gx, gy = info["rel_goal"][0], info["rel_goal"][1]
+        bearing = jp.arctan2(gy, gx)
+        return jp.square(bearing)
+    
+    def _reward_abstract_map(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
+        """Reward based on the abstract map cost at the robot's current position."""
+        pos = data.qpos[:2]  # x, y position of the base
+        cost = self.env.abstract_map.get_cost(pos, info["abstract_map"])
+        return cost
 
     # Base related rewards
     def _cost_lin_vel_z(self, local_linvel) -> jax.Array:

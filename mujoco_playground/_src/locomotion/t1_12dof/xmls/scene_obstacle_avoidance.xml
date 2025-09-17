@@ -25,17 +25,17 @@
 
   <worldbody>
     <!-- Ground plane --> 
-    <geom name="floor" size="0 0 0.01" type="plane" material="groundplane" priority="1" friction="0.8" contype="1" conaffinity="2" condim="3"/>
+    <geom name="floor" size="0 0 0.01" type="plane" material="groundplane" priority="1" friction="0.8" contype="1" conaffinity="2" condim="3" pos="0.25 0.25 0"/>
 
     <!-- Vertical walls (static) -->
-    <!-- Arena half extents (ARENA_X=4.0, ARENA_Y=4.0); wall thickness=0.04, height=0.5 -->
-    <geom name="wall_pos_x" type="box" size="0.02 4.0 0.5" pos="4.0 0 0.25" material="wall_mat"
+    <!-- Arena half extents (ARENA_X=4.0, ARENA_Y=4.0); wall thickness=0.05, height=0.5 -->
+    <geom name="wall_pos_x" type="box" size="0.05 4.0 0.5" pos="4.0 0 0.25" material="wall_mat"
           contype="1" conaffinity="2" friction="0.8 0.1 0.01"/>
-    <geom name="wall_neg_x" type="box" size="0.02 4.0 0.5" pos="-4.0 0 0.25" material="wall_mat"
+    <geom name="wall_neg_x" type="box" size="0.05 4.0 0.5" pos="-4.0 0 0.25" material="wall_mat"
           contype="1" conaffinity="2" friction="0.8 0.1 0.01"/>
-    <geom name="wall_pos_y" type="box" size="4.0 0.02 0.5" pos="0.0 4.0 0.25" material="wall_mat"
+    <geom name="wall_pos_y" type="box" size="4.0 0.05 0.5" pos="0.0 4.0 0.25" material="wall_mat"
           contype="1" conaffinity="2" friction="0.8 0.1 0.01"/>
-    <geom name="wall_neg_y" type="box" size="4.0 0.02 0.5" pos="0.0 -4.0 0.25" material="wall_mat"
+    <geom name="wall_neg_y" type="box" size="4.0 0.05 0.5" pos="0.0 -4.0 0.25" material="wall_mat"
           contype="1" conaffinity="2" friction="0.8 0.1 0.01"/>
 
     <!-- STATIC OBSTACLES (example layout) -->

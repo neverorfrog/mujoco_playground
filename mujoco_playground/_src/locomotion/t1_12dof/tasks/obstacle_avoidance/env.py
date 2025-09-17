@@ -33,6 +33,7 @@ from mujoco_playground._src.locomotion.t1_12dof import base as t1_base
 from mujoco_playground._src.locomotion.t1_12dof import t1_constants as consts
 from .rewards import ObstacleAvoidanceRewards
 from .config import ObstacleAvoidanceConfig
+from .abstract_map import AbstractMap
 
 def _to_config_dict(obj):
     if isinstance(obj, dict):
@@ -64,6 +65,7 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         )
         self._post_init()
         self.rewards = ObstacleAvoidanceRewards(self)
+        self.abstract_map = AbstractMap(bins=15, bin_size=0.5)
         
     def _post_init(self) -> None:
         self._init_q = jp.array(self._mj_model.keyframe("home").qpos)
@@ -135,23 +137,20 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         qpos = self._init_q
         qvel = jp.zeros(self.mjx_model.nv)
 
-        # x=+U(-0.1, 0.1), y=+U(-0.1, 0.1), yaw=U(-3.14, 3.14).
-        # rng, key = jax.random.split(rng)
-        # dxy = jax.random.uniform(key, (2,), minval=-0.1, maxval=0.1) # CONFIG
-        # qpos = qpos.at[0:2].set(qpos[0:2] + dxy)
-        # rng, key = jax.random.split(rng)
-        # yaw = jax.random.uniform(key, (1,), minval=-3.14, maxval=3.14)
-        # quat = math.axis_angle_to_quat(jp.array([0, 0, 1]), yaw)
-        # new_quat = math.quat_mul(qpos[3:7], quat)
-        # qpos = qpos.at[3:7].set(new_quat)
+        rng, key = jax.random.split(rng)
+        dxy = jax.random.uniform(key, (2,), minval=-0.1, maxval=0.1)
+        qpos = qpos.at[0:2].set(qpos[0:2] + dxy)
+        rng, key = jax.random.split(rng)
+        yaw = jax.random.uniform(key, (1,), minval=-0.2, maxval=0.2)
+        quat = math.axis_angle_to_quat(jp.array([0, 0, 1]), yaw)
+        new_quat = math.quat_mul(qpos[3:7], quat)
+        qpos = qpos.at[3:7].set(new_quat)
 
-        # qpos[7:]=*U(0.5, 1.5)
         rng, key = jax.random.split(rng)
         qpos = qpos.at[7:].set(
             qpos[7:] * jax.random.uniform(key, (12,), minval=0.8, maxval=1.2)
         )
 
-        # d(xyzrpy)=U(-0.5, 0.5)
         rng, key = jax.random.split(rng)
         qvel = qvel.at[0:6].set(jax.random.uniform(key, (6,), minval=-0.2, maxval=0.2))
 
@@ -163,10 +162,13 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         phase_dt = 2 * jp.pi * self.dt * gait_freq
         phase = jp.array([0, jp.pi])
 
+        rng, goal_rng = jax.random.split(rng)
         goal = jp.array(self._config.scene_config.goal_position)
+        goal += jax.random.uniform(goal_rng, shape=goal.shape, minval=-0.1, maxval=0.1)
+        goal = jp.array(goal[:2])
         rng, cmd_rng = jax.random.split(rng)
         cmd = self.get_command(goal, cmd_rng)
-
+        
         # Sample push interval.
         rng, push_rng = jax.random.split(rng)
         push_interval = jax.random.uniform(
@@ -175,10 +177,12 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
             maxval=self._config.push_config.interval_range[1],
         )
         push_interval_steps = jp.round(push_interval / self.dt).astype(jp.int32)
-
+        
         info = {
             "abs_goal": jp.array([goal[0], goal[1]]), # ENV
-            "goal": jp.array([goal[0], goal[1]]) - data.qpos[:2],
+            "rel_goal": jp.array([goal[0], goal[1]]) - data.qpos[:2],
+            "global_step": jp.array(0, dtype=jp.int32),
+            "abstract_map": self.abstract_map.reset(goal, np.array([])),
             "rng": rng,
             "step": 0,
             "command": cmd,
@@ -274,18 +278,26 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         state.info["swing_peak"] = jp.maximum(state.info["swing_peak"], p_fz)
 
         obs = self._get_obs(data, state.info, contact)
-        done = self._get_termination(data, state.info)
+        done, goal_reached = self._get_termination(data, state.info)
 
         rewards = self.rewards.get(
             data, action, state.info, state.metrics, done, first_contact, contact
         )
-        rewards = {
-            k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
-        }
+        rewards["goal_reached"] = jp.where(goal_reached, jp.array(200.0), jp.array(0.0))
+        
+        # curriculum_weights = self._get_curriculum_weights(state.info)       
+        for k, v in rewards.items():
+            base_scale = self._config.reward_config.scales[k]
+            # if(k in curriculum_weights.keys()):
+                # rewards[k] *= curriculum_weights[k]
+            # else:
+            rewards[k] *= base_scale
+
         reward = jp.clip(sum(rewards.values()) * self.dt, 0.0, 10000.0)
 
         state.info["push"] = push
         state.info["step"] += 1
+        state.info["global_step"] += 1
         state.info["push_step"] += 1
         phase_tp1 = state.info["phase"] + state.info["phase_dt"]
         state.info["phase"] = jp.fmod(phase_tp1 + jp.pi, 2 * jp.pi) - jp.pi
@@ -296,9 +308,8 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         )
         state.info["last_last_act"] = state.info["last_act"]
         state.info["last_act"] = action
-        state.info["rng"], cmd_rng = jax.random.split(state.info["rng"])
         state.info["step"] = jp.where(
-            done | (state.info["step"] > 500),
+            done,
             0,
             state.info["step"],
         )
@@ -315,8 +326,8 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
 
     def _get_termination(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
         fall_termination = self.get_gravity(data)[-1] < 0.0
-        goal_termination = jp.linalg.norm(info["goal"]) < 0.3 # ENV
-        return fall_termination | jp.isnan(data.qpos).any() | jp.isnan(data.qvel).any() | goal_termination
+        goal_termination = jp.linalg.norm(info["rel_goal"]) < 0.25 # ENV
+        return fall_termination | jp.isnan(data.qpos).any() | jp.isnan(data.qvel).any() | goal_termination, goal_termination
 
     def _get_obs(
         self, data: mjx.Data, info: dict[str, Any], contact: jax.Array
@@ -370,26 +381,17 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
             * self._config.noise_config.scales.linvel
         )
         
-        # ENV
-        # TODO: Distance and angle to obstacles 
-        
         # ENV: including feedback to generate command
         # info["command"] is the desired (x, y, yaw) velocity
         # convert goal to be relative to robot's position
-        info["goal"] = info["abs_goal"] - data.qpos[:2]
-        # info["goal"] = jp.where(
-        #     jax.random.bernoulli(info["rng"], p=0.1),
-        #     jp.zeros_like(info["goal"]),
-        #     info["goal"],
-        # )
+        info["rel_goal"] = info["abs_goal"] - data.qpos[:2]
 
         state = jp.hstack(
             [
                 noisy_linvel, # 3
                 noisy_gyro,  # 3
                 noisy_gravity,  # 3
-                info["goal"],  # 2 ENV
-                info["command"],  # 3
+                info["abs_goal"],  # ENV 2
                 noisy_joint_angles - self._default_pose,  # 12
                 noisy_joint_vel,  # 12
                 info["last_act"],  # 12
@@ -405,6 +407,7 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         privileged_state = jp.hstack(
             [
                 state,
+                info["command"],  # 3
                 gyro,  # 3
                 accelerometer,  # 3
                 gravity,  # 3
@@ -428,18 +431,9 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
 
     def get_command(self, goal: jax.Array, rng: jax.Array) -> jax.Array:
         rng1, rng2, rng3, rng4 = jax.random.split(rng, 4)
-        
         goal_dist = jp.linalg.norm(goal) + 1e-8
         goal_dir = goal / goal_dist
-
-        lin_vel_x = jax.random.uniform(rng1, minval=0.0, maxval=1.0) * goal_dir[0]
-        lin_vel_x = jp.clip(lin_vel_x, -self._config.lin_vel_x[1], self._config.lin_vel_x[1])
-        
-        jax.debug.print("get_command: goal={g}, goal_dist={d}, goal_dir={gd}, lin_vel_x={lvx}", g=goal, d=goal_dist, gd=goal_dir, lvx=lin_vel_x)
-        lin_vel_y = 0.0
-        ang_vel_yaw = 0.0
-        
-        return jp.array([lin_vel_x, lin_vel_y, ang_vel_yaw])
+        return jp.array([goal_dir[0], goal_dir[1], 0.0])
 
         
     def _setup_scene(self, xml_path: str, config: dict) -> str:
@@ -478,6 +472,35 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
                 site.set("pos", " ".join(map(str, goal_position)))
 
         return ET.tostring(root, encoding="unicode")
+    
+    def _get_curriculum_weights(self, info: Dict[str, Any]):
+        alpha = jp.clip(
+            info["global_step"] / self._config.reward_config.curriculum["ramp_steps"], 0.0, 1.0
+        )
+        
+        # Weights departing from normal config and ending in curriculum config
+        tracking_lin_vel_x = self._config.reward_config.scales["tracking_lin_vel_x"] - alpha * (
+            self._config.reward_config.curriculum["tracking_lin_vel_x"] - self._config.reward_config.scales["tracking_lin_vel_x"]
+        )
+        tracking_lin_vel_y = self._config.reward_config.scales["tracking_lin_vel_y"] - alpha * (
+            self._config.reward_config.curriculum["tracking_lin_vel_y"] - self._config.reward_config.scales["tracking_lin_vel_y"]
+        )
+        
+        # Weights departing from curriculum config and ending in normal config
+        cost_to_goal_distance = self._config.reward_config.curriculum["cost_to_goal_distance"] + alpha * (
+            self._config.reward_config.scales["cost_to_goal_distance"] - self._config.reward_config.curriculum["cost_to_goal_distance"]
+        )
+        cost_to_goal_orientation = self._config.reward_config.curriculum["cost_to_goal_orientation"] + alpha * (
+            self._config.reward_config.scales["cost_to_goal_orientation"] - self._config.reward_config.curriculum["cost_to_goal_orientation"]
+        )
+        
+        return {
+            "tracking_lin_vel_x": tracking_lin_vel_x,
+            "tracking_lin_vel_y": tracking_lin_vel_y,
+            "cost_to_goal_distance": -cost_to_goal_distance,
+            "cost_to_goal_orientation": -cost_to_goal_orientation
+        }
+        
 
 
     # ----- feet kinematics ----------------------------------------------------

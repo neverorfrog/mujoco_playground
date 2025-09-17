@@ -4,13 +4,14 @@ Dataclass-based configuration for the Booster T1 joystick task.
 
 from dataclasses import dataclass, field, asdict, replace
 from typing import List, Tuple, Dict, Any
+import jax.numpy as jp
 
 @dataclass
 class SceneConfig:
-    obstacle_positions: List[Tuple[float, float]] = field(default_factory=lambda: 
-        [(1.75, 0.25), (-0.02, 0.1), (0.12, 0.17)])
-    goal_position: Tuple[float, float] = field(default_factory=lambda: (2.25, 0.0, 0.0))
-    
+    obstacle_positions: jp.array = field(default_factory=lambda: 
+        jp.array([(1.75, 0.25), (-0.02, 0.1), (0.12, 0.17)]))
+    goal_position: jp.array = field(default_factory=lambda: jp.array([2.5, 0.0, 0.0]))
+
 @dataclass
 class RewardScales:
     """Reward scaling factors for different reward components."""
@@ -18,8 +19,9 @@ class RewardScales:
     tracking_lin_vel_x: float = 1.0
     tracking_lin_vel_y: float = 1.0
     tracking_ang_vel: float = 2.0
-    cost_to_goal_x: float = -0.0 # CONFIG: this shouldn't be too high
-    cost_to_goal_y: float = -0.0 # CONFIG: this shouldn't be too high
+    cost_to_goal_distance: float = 0.0
+    cost_to_goal_orientation: float = 0.0
+    reward_abstract_map: float = 0.1
 
     # Base related rewards
     lin_vel_z: float = -2.0
@@ -46,14 +48,25 @@ class RewardScales:
     feet_collision: float = -10.0
     
     # Other rewards
-    survival: float = 0.1
+    survival: float = 0.25
     root_acc: float = -1.0e-4
     dof_pos_limits: float = -1.0
+    goal_reached: float = 1.0
     
+@dataclass
+class CurriculumConfig:
+    ramp_steps: int = 30000
+    tracking_lin_vel_x: float = 1.0
+    tracking_lin_vel_y: float = 1.0
+    cost_to_goal_distance: float = 0.0
+    cost_to_goal_orientation: float = 0.0
+
+
 @dataclass
 class RewardConfig:
     """Configuration for reward computation."""
     scales: RewardScales = field(default_factory=RewardScales)
+    curriculum: CurriculumConfig = field(default_factory=CurriculumConfig)
     tracking_sigma: float = 0.25
     base_height_target: float = 0.68
     swing_period: float = 0.2
@@ -130,6 +143,8 @@ class ObstacleAvoidanceConfig:
             if isinstance(r, dict):
                 if "scales" in r and isinstance(r["scales"], dict):
                     r["scales"] = RewardScales(**r["scales"])
+                if "curriculum" in r and isinstance(r["curriculum"], dict):
+                    r["curriculum"] = CurriculumConfig(**r["curriculum"])
                 config_dict["reward_config"] = RewardConfig(**r)
         if "push_config" in config_dict:
             p = config_dict["push_config"]
