@@ -70,6 +70,9 @@ class FootstepPlan:
     ds_start_times: jp.ndarray
     end_times: jp.ndarray
     step_frequency: float
+    zmp_midpoints_x: jp.ndarray = None
+    zmp_midpoints_y: jp.ndarray = None
+    zmp_midpoints_theta: jp.ndarray = None
 
 
 class FootstepPlanner:
@@ -248,7 +251,7 @@ class FootstepPlanner:
             end_times,
         ) = jax.lax.fori_loop(0, num_steps, step_iteration, init_val)
 
-        self.footstep_plan = FootstepPlan(
+        footstep_plan = FootstepPlan(
             swing_foot_ids=swing_foot_ids,
             start_poses=start_poses,
             end_poses=end_poses,
@@ -258,7 +261,15 @@ class FootstepPlanner:
             end_times=end_times,
             step_frequency=step_frequency,
         )
-        return self.footstep_plan
+        
+        zmp_x, zmp_y, zmp_theta = self.compute_zmp_midpoints(
+            footstep_plan, left_foot_pose, right_foot_pose, start_time
+        )
+        footstep_plan.zmp_midpoints_x = zmp_x
+        footstep_plan.zmp_midpoints_y = zmp_y
+        footstep_plan.zmp_midpoints_theta = zmp_theta
+        self.footstep_plan = footstep_plan
+        return footstep_plan
 
     @staticmethod
     def _rot(theta: float) -> jp.ndarray:
@@ -277,7 +288,6 @@ class FootstepPlanner:
         left_foot_pose: jp.ndarray,
         right_foot_pose: jp.ndarray,
         current_time: float = 0.0,
-        previous_zmp_midpoints: jp.ndarray = None
     ) -> Tuple[jp.ndarray, jp.ndarray, jp.ndarray]:
         """
         Compute ZMP midpoints for the moving constraint.
@@ -297,7 +307,6 @@ class FootstepPlanner:
         
         def process_footstep(i: int, zmp_midpoints: Tuple[jp.ndarray, jp.ndarray, jp.ndarray]) -> Tuple[jp.ndarray, jp.ndarray, jp.ndarray]:
             zmp_x, zmp_y, zmp_theta = zmp_midpoints
-            jax.debug.print("Processing footstep {i}", i=i)
             
             # Get footstep data
             start_pose = footstep_plan.support_poses[i]
@@ -315,25 +324,14 @@ class FootstepPlanner:
             end_y = end_pose[1]
             end_theta = end_pose[2]
             
-            jax.debug.print("Footstep {i} start pose: ({start_x}, {start_y}, {start_theta})", i=i, start_x=start_x, start_y=start_y, start_theta=start_theta)
-            jax.debug.print("Footstep {i} end pose: ({end_x}, {end_y}, {end_theta})", i=i, end_x=end_x, end_y=end_y, end_theta=end_theta)
-            
             # Compute sigma function for smooth transition
             sigma = self._sigma_function(time, ds_start_time, end_time)
-            
-            # jax.debug.print("    start_time: {ds_start_time}, end_time: {end_time}", ds_start_time=ds_start_time, end_time=end_time)
-            # jax.debug.print("    Sigma values for step {i}: {sigma}", i=i, sigma=sigma)
             
             # Update ZMP midpoints with smooth transition
             zmp_x = zmp_x + sigma * (end_x - start_x)
             zmp_y = zmp_y + sigma * (end_y - start_y)
             zmp_theta = zmp_theta + sigma * (end_theta - start_theta)
             
-            jax.debug.print("ZMP x after step {i}: {zmp_x}", i=i, zmp_x=zmp_x)
-            # jax.debug.print("ZMP y after step {i}: {zmp_y}", i=i, zmp_y=zmp_y)
-            # jax.debug.print("ZMP theta after step {i}: {zmp_theta}", i=i, zmp_theta=zmp_theta)
-            
-            # jax.debug.print("Footstep end pose: ({end_x}, {end_y}, {end_theta})", end_x=end_x, end_y=end_y, end_theta=end_theta)
             return (zmp_x, zmp_y, zmp_theta)
         
         relevant_steps = jp.where(
@@ -392,12 +390,3 @@ if __name__ == "__main__":
     left_foot_pose = jp.array([0.0, 0.1, 0.0])
     right_foot_pose = jp.array([0.0, -0.1, 0.0])
     plan = planner.plan(command, left_foot_pose, right_foot_pose)
-    # print("Planned footsteps:")
-    # for i in range(len(plan.swing_foot_ids)):
-    #     print(f"Step {i+1}: Swing foot: {'LEFT' if plan.swing_foot_ids[i]==Foot.LEFT else 'RIGHT'}")
-    #     print(f"   Start pose: {plan.start_poses[i]}")
-    #     print(f"   End pose: {plan.end_poses[i]}")
-    #     print(f"   Start time: {plan.start_times[i]}, DS start time: {plan.ds_start_times[i]}, End time: {plan.end_times[i]}")
-    zmp_x, zmp_y, zmp_theta = planner.compute_zmp_midpoints(
-        plan, left_foot_pose, right_foot_pose
-    )
