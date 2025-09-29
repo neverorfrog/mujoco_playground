@@ -14,8 +14,6 @@
 # ==============================================================================
 """Navigation task for Booster T1."""
 
-import copy
-import re
 from typing import Any, Dict, Optional, Union
 
 import jax
@@ -25,15 +23,14 @@ from mujoco import mjx
 from mujoco.mjx._src import math
 import numpy as np
 
-import xml.etree.ElementTree as ET
-
 from mujoco_playground._src import mjx_env
 from mujoco_playground._src.collision import geoms_colliding
 from mujoco_playground._src.locomotion.t1_12dof import base as t1_base
 from mujoco_playground._src.locomotion.t1_12dof import t1_constants as consts
 from .rewards import ObstacleAvoidanceRewards
-from .config import ObstacleAvoidanceConfig
-from .abstract_map import AbstractMap
+from .config import ObstacleAvoidanceConfig, SceneConfig
+from .map import Map
+from .planner import FootstepPlanner
 
 def _to_config_dict(obj):
     if isinstance(obj, dict):
@@ -55,17 +52,22 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
     ):
         xml_path = consts.task_to_xml(task).as_posix()
-        xml_content = self._setup_scene(xml_path, config)
+        
+        # Map and scene setup
+        self.scene_cfg = SceneConfig()
+        goal = self.scene_cfg.goal_position
+        self.goal = jp.array(goal[:2]) 
+        self.map = Map()
         
         super().__init__(
             xml_path=xml_path,
-            xml_content=xml_content,
+            xml_content=self.map._xml,
             config=config,
             config_overrides=config_overrides,
         )
         self._post_init()
         self.rewards = ObstacleAvoidanceRewards(self)
-        self.abstract_map = AbstractMap(bins=15, bin_size=0.5)
+        self.planner = FootstepPlanner()
         
     def _post_init(self) -> None:
         self._init_q = jp.array(self._mj_model.keyframe("home").qpos)
@@ -126,6 +128,9 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
 
         self._left_foot_box_geom_id = self._mj_model.geom("left_foot").id
         self._right_foot_box_geom_id = self._mj_model.geom("right_foot").id
+        self._obstacle_geom_ids = []
+        for i in range(self.scene_cfg.num_obstacles):
+            self._obstacle_geom_ids.append(self._mj_model.geom(f"obstacle_{i}").id)
 
         force_range = self._mj_model.actuator_forcerange  # (nact, 2)
         force_limited = self._mj_model.actuator_forcelimited  # (nact,)
@@ -136,38 +141,15 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
     def reset(self, rng: jax.Array) -> mjx_env.State:
         qpos = self._init_q
         qvel = jp.zeros(self.mjx_model.nv)
-
-        rng, key = jax.random.split(rng)
-        dxy = jax.random.uniform(key, (2,), minval=-0.1, maxval=0.1)
-        qpos = qpos.at[0:2].set(qpos[0:2] + dxy)
-        rng, key = jax.random.split(rng)
-        yaw = jax.random.uniform(key, (1,), minval=-0.2, maxval=0.2)
-        quat = math.axis_angle_to_quat(jp.array([0, 0, 1]), yaw)
-        new_quat = math.quat_mul(qpos[3:7], quat)
-        qpos = qpos.at[3:7].set(new_quat)
-
-        rng, key = jax.random.split(rng)
-        qpos = qpos.at[7:].set(
-            qpos[7:] * jax.random.uniform(key, (12,), minval=0.8, maxval=1.2)
-        )
-
-        rng, key = jax.random.split(rng)
-        qvel = qvel.at[0:6].set(jax.random.uniform(key, (6,), minval=-0.2, maxval=0.2))
-
         data = mjx_env.init(self.mjx_model, qpos=qpos, qvel=qvel, ctrl=qpos[7:])
 
         # Phase, freq=U(1.25, 1.75)
         rng, key = jax.random.split(rng)
-        gait_freq = jax.random.uniform(key, (1,), minval=1.25, maxval=1.75)
+        gait_freq = jax.random.uniform(key, (), minval=1.25, maxval=1.75)
         phase_dt = 2 * jp.pi * self.dt * gait_freq
         phase = jp.array([0, jp.pi])
 
-        rng, goal_rng = jax.random.split(rng)
-        goal = jp.array(self._config.scene_config.goal_position)
-        goal += jax.random.uniform(goal_rng, shape=goal.shape, minval=-0.1, maxval=0.1)
-        goal = jp.array(goal[:2])
-        rng, cmd_rng = jax.random.split(rng)
-        cmd = self.get_command(goal, cmd_rng)
+        cmd = self.get_command(self.goal - data.qpos[:2])
         
         # Sample push interval.
         rng, push_rng = jax.random.split(rng)
@@ -178,14 +160,47 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         )
         push_interval_steps = jp.round(push_interval / self.dt).astype(jp.int32)
         
+        # TODOPLA
+        # Footstep planning
+        # Initial feet poses TODOPLA check correctness of this
+        left_foot_pose = data.site_xpos[self._feet_site_id[0]]
+        right_foot_pose = data.site_xpos[self._feet_site_id[1]]
+        # self.planner.config.step_frequency = gait_freq
+        # plan = self.planner.plan(
+        #     command=cmd,
+        #     left_foot_pose=left_foot_pose,
+        #     right_foot_pose=right_foot_pose,
+        # )
+        # jax.debug.print("Planned {} steps", len(plan.start_times))
+        # jax.debug.print("Step times: {}", plan.start_times)
+        # jax.debug.print("Step X: {}", plan.start_poses[:, 0])
+        # jax.debug.print("Step Y: {}", plan.start_poses[:, 1])
+        # jax.debug.print("Step Theta: {}", plan.start_poses[:, 2])
+        
         info = {
-            "abs_goal": jp.array([goal[0], goal[1]]), # ENV
-            "rel_goal": jp.array([goal[0], goal[1]]) - data.qpos[:2],
+            # Map
+            "abs_goal": self.goal, # ENV
+            "rel_goal": self.goal - data.qpos[:2],
+            "obstacles": jp.array(self.map.obstacles),
             "global_step": jp.array(0, dtype=jp.int32),
-            "abstract_map": self.abstract_map.reset(goal, np.array([])),
+            "map": self.map.get_map(),
+            "gradient": self.map.get_gradient(),
+            "previous_com": data.subtree_com[self._torso_body_id],
+            # Footstep plan TODOPLA
+            # "swing_foot_ids": plan.swing_foot_ids,
+            # "start_poses": plan.start_poses,
+            # "end_poses": plan.end_poses,
+            # "support_poses": plan.support_poses,
+            # "start_times": plan.start_times,
+            # "end_times": plan.end_times,
+            # "zmp_midpoints_x": plan.zmp_midpoints_x,
+            # "zmp_midpoints_y": plan.zmp_midpoints_y,
+            # "zmp_midpoints_theta": plan.zmp_midpoints_theta,
+            # Other
             "rng": rng,
             "step": 0,
             "command": cmd,
+            "last_command": cmd,
             "last_act": jp.zeros(self.mjx_model.nu),
             "last_last_act": jp.zeros(self.mjx_model.nu),
             "motor_targets": jp.zeros(self.mjx_model.nu),
@@ -200,6 +215,7 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
             "push_step": 0,
             "push_interval_steps": push_interval_steps,
             "filtered_linvel": jp.zeros(3),
+            "last_linvel": jp.zeros(3),
             "filtered_angvel": jp.zeros(3),
         }
 
@@ -248,6 +264,7 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         data = mjx_env.step(self.mjx_model, state.data, motor_targets, self.n_substeps)
         state.info["motor_targets"] = motor_targets
 
+        state.info["last_linvel"] = state.info["filtered_linvel"]
         linvel = self.get_local_linvel(data)
         state.info["filtered_linvel"] = (
             linvel * 1.0 + state.info["filtered_linvel"] * 0.0
@@ -276,24 +293,37 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         p_f = data.site_xpos[self._feet_site_id]
         p_fz = p_f[..., -1]
         state.info["swing_peak"] = jp.maximum(state.info["swing_peak"], p_fz)
+        
+        # Get command from abstract map
+        torso_R = data.site_xmat[self._site_id]
+        robot_yaw = jp.arctan2(torso_R[1, 0], torso_R[0, 0])
+        state.info["last_command"] = state.info["command"]
+        state.info["command"] = self.map.get_command(data.qpos[:2], robot_yaw)
+        
+        # self._estimate_zmp(data, contact_filt)
+        # current_com = data.subtree_com[self._torso_body_id] 
+        # com_vel = (current_com - state.info["previous_com"]) / self.dt
+        # state.info["previous_com"] = current_com
+        # jax.debug.print("COM pos: {}, Numerical COM vel: {}", current_com, com_vel)
+        # state.info["com_vel"] = self.get_local_linvel(data)
 
         obs = self._get_obs(data, state.info, contact)
-        done, goal_reached = self._get_termination(data, state.info)
+        done, fallen, goal_reached, max_steps_reached = self._get_termination(data, state.info)
 
         rewards = self.rewards.get(
             data, action, state.info, state.metrics, done, first_contact, contact
         )
-        rewards["goal_reached"] = jp.where(goal_reached, jp.array(200.0), jp.array(0.0))
+        rewards["episode_failed"] = jp.where(fallen | max_steps_reached, jp.array(-100.0), jp.array(0.0))
         
-        # curriculum_weights = self._get_curriculum_weights(state.info)       
+        curriculum_weights = self._get_curriculum_weights(state.info)
         for k, v in rewards.items():
             base_scale = self._config.reward_config.scales[k]
-            # if(k in curriculum_weights.keys()):
-                # rewards[k] *= curriculum_weights[k]
-            # else:
-            rewards[k] *= base_scale
+            if(k in curriculum_weights.keys()):
+                rewards[k] *= curriculum_weights[k]
+            else:
+                rewards[k] *= base_scale
 
-        reward = jp.clip(sum(rewards.values()) * self.dt, 0.0, 10000.0)
+        reward = jp.clip(sum(rewards.values()) * self.dt, -1000.0, 10000.0)
 
         state.info["push"] = push
         state.info["step"] += 1
@@ -308,6 +338,7 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         )
         state.info["last_last_act"] = state.info["last_act"]
         state.info["last_act"] = action
+        
         state.info["step"] = jp.where(
             done,
             0,
@@ -326,8 +357,14 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
 
     def _get_termination(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
         fall_termination = self.get_gravity(data)[-1] < 0.0
-        goal_termination = jp.linalg.norm(info["rel_goal"]) < 0.25 # ENV
-        return fall_termination | jp.isnan(data.qpos).any() | jp.isnan(data.qvel).any() | goal_termination, goal_termination
+        goal_termination = jp.linalg.norm(info["rel_goal"]) < 0.25
+        steps_termination = info["step"] >= 1450
+        return (
+            fall_termination | jp.isnan(data.qpos).any() | jp.isnan(data.qvel).any() | goal_termination | steps_termination, 
+            fall_termination,
+            goal_termination,
+            steps_termination
+        )
 
     def _get_obs(
         self, data: mjx.Data, info: dict[str, Any], contact: jax.Array
@@ -391,7 +428,7 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
                 noisy_linvel, # 3
                 noisy_gyro,  # 3
                 noisy_gravity,  # 3
-                info["abs_goal"],  # ENV 2
+                info["command"],  # 3
                 noisy_joint_angles - self._default_pose,  # 12
                 noisy_joint_vel,  # 12
                 info["last_act"],  # 12
@@ -407,7 +444,6 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         privileged_state = jp.hstack(
             [
                 state,
-                info["command"],  # 3
                 gyro,  # 3
                 accelerometer,  # 3
                 gravity,  # 3
@@ -429,50 +465,11 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         }
 
 
-    def get_command(self, goal: jax.Array, rng: jax.Array) -> jax.Array:
-        rng1, rng2, rng3, rng4 = jax.random.split(rng, 4)
+    def get_command(self, goal: jax.Array) -> jax.Array:
         goal_dist = jp.linalg.norm(goal) + 1e-8
         goal_dir = goal / goal_dist
         return jp.array([goal_dir[0], goal_dir[1], 0.0])
-
         
-    def _setup_scene(self, xml_path: str, config: dict) -> str:
-        """Setup the Mujoco environment by modifying the XML file"""
-        with open(xml_path, "r") as file:
-            xml = file.read()
-
-        # Overwrite the target and obstacle position in the XML file
-        tree = copy.deepcopy(ET.ElementTree(ET.fromstring(xml)))
-        root = tree.getroot()
-        obstacle_pattern = re.compile(r"obstacle_\d+")
-        goal_pattern = re.compile(r"goal")
-
-        obstacle_positions = config.scene_config.obstacle_positions
-        goal_position = config.scene_config.goal_position
-
-        for geom in root.findall(".//geom"):
-            if obstacle_pattern.match(geom.get("name", "")):
-                print(f"Found obstacle: {geom.get('name')}")
-                obstacle_index = int(geom.get("name").replace("obstacle_", ""))
-                try:
-                    new_obstacle_pos = np.array(
-                        [*obstacle_positions[obstacle_index], 0.0]
-                    )
-                    obstacle_positions[obstacle_index] = new_obstacle_pos
-                    geom.set("pos", " ".join(map(str, new_obstacle_pos)))
-                    print(
-                        f"Set new position for {geom.get('name')}: {new_obstacle_pos}"
-                    )
-                except IndexError:
-                    new_obstacle_pos = np.array([2.0, 0.0, 0.0])
-                    geom.set("pos", " ".join(map(str, new_obstacle_pos)))
-
-        for site in root.findall(".//site"):
-            if goal_pattern.match(site.get("name", "")):
-                site.set("pos", " ".join(map(str, goal_position)))
-
-        return ET.tostring(root, encoding="unicode")
-    
     def _get_curriculum_weights(self, info: Dict[str, Any]):
         alpha = jp.clip(
             info["global_step"] / self._config.reward_config.curriculum["ramp_steps"], 0.0, 1.0
@@ -485,23 +482,14 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         tracking_lin_vel_y = self._config.reward_config.scales["tracking_lin_vel_y"] - alpha * (
             self._config.reward_config.curriculum["tracking_lin_vel_y"] - self._config.reward_config.scales["tracking_lin_vel_y"]
         )
-        
-        # Weights departing from curriculum config and ending in normal config
-        cost_to_goal_distance = self._config.reward_config.curriculum["cost_to_goal_distance"] + alpha * (
-            self._config.reward_config.scales["cost_to_goal_distance"] - self._config.reward_config.curriculum["cost_to_goal_distance"]
+        tracking_ang_vel = self._config.reward_config.scales["tracking_ang_vel"] - alpha * (
+            self._config.reward_config.curriculum["tracking_ang_vel"] - self._config.reward_config.scales["tracking_ang_vel"]
         )
-        cost_to_goal_orientation = self._config.reward_config.curriculum["cost_to_goal_orientation"] + alpha * (
-            self._config.reward_config.scales["cost_to_goal_orientation"] - self._config.reward_config.curriculum["cost_to_goal_orientation"]
-        )
-        
         return {
-            "tracking_lin_vel_x": tracking_lin_vel_x,
-            "tracking_lin_vel_y": tracking_lin_vel_y,
-            "cost_to_goal_distance": -cost_to_goal_distance,
-            "cost_to_goal_orientation": -cost_to_goal_orientation
+            # "tracking_lin_vel_x": tracking_lin_vel_x,
+            # "tracking_lin_vel_y": tracking_lin_vel_y,
+            # "tracking_ang_vel": tracking_ang_vel
         }
-        
-
 
     # ----- feet kinematics ----------------------------------------------------
     def _feet_site_xmat(self, data: mjx.Data) -> jax.Array:
@@ -516,3 +504,46 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         roll = jp.arctan2(R[:, 2, 1], R[:, 2, 2])
         yaw = jp.arctan2(R[:, 1, 0], R[:, 0, 0])
         return roll, yaw
+    
+    def _estimate_zmp(self, data: mjx.Data, contacts: jp.ndarray) -> jax.Array:
+        """
+        Estimates the ZMP as the centroid of the active foot contact points.
+
+        Args:
+            data: The mjx.Data object for the current step.
+            left_contacts: A boolean array of shape (4,) indicating which left foot spheres are in contact.
+            right_contacts: A boolean array of shape (4,) indicating which right foot spheres are in contact.
+
+        Returns:
+            A 3D vector representing the estimated ZMP position in the world frame.
+        """
+        # 1. Get the world positions of all 8 foot spheres
+        left_sphere_ids = self._left_feet_geom_id
+        right_sphere_ids = self._right_feet_geom_id
+        all_sphere_ids = jp.concatenate([left_sphere_ids, right_sphere_ids])
+        all_sphere_pos = data.geom_xpos[all_sphere_ids]  # Shape (8, 3)
+        
+        # # 3. Handle the two cases: in contact or airborne
+        # num_contacts = jp.sum(all_contacts_mask)
+        
+        # def in_contact_case():
+        #     # Compute the weighted sum of positions (only contacting spheres contribute)
+        #     contacting_sphere_pos_sum = jp.sum(all_sphere_pos * all_contacts_mask[:, None], axis=0)
+        #     # Calculate the centroid (mean) of these positions
+        #     estimated_zmp = contacting_sphere_pos_sum / num_contacts
+        #     return estimated_zmp
+
+        # def airborne_case():
+        #     # Fallback: ZMP is the COM projected onto the ground plane
+        #     com_position = data.subtree_com[self._torso_body_id]
+        #     projected_com = com_position.at[2].set(0.0)  # Set z-coordinate to 0
+        #     return projected_com
+        
+        # zmp_position = jax.lax.cond(
+        #     num_contacts > 0,
+        #     lambda _: in_contact_case(),
+        #     lambda _: airborne_case(),
+        #     operand=None
+        # )
+        
+        # return zmp_position

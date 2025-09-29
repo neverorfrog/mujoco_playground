@@ -106,6 +106,7 @@ def brax_ppo_config(env_name: str) -> config_dict.ConfigDict:
       "BerkeleyHumanoidJoystickFlatTerrain",
       "BerkeleyHumanoidJoystickRoughTerrain",
       "T1LowDimJoystickFlatTerrain",
+      "T1LowDimObstacleAvoidance",
   ):
     rl_config.num_timesteps = 150_000_000
     rl_config.num_evals = 50 # EVAL
@@ -124,7 +125,7 @@ def brax_ppo_config(env_name: str) -> config_dict.ConfigDict:
       "T1JoystickRoughTerrain",
   ):
     rl_config.num_timesteps = 200_000_000
-    rl_config.num_evals = 20
+    rl_config.num_evals = 200
     rl_config.clipping_epsilon = 0.2
     rl_config.num_resets_per_eval = 1
     rl_config.entropy_cost = 0.005
@@ -144,7 +145,6 @@ def brax_ppo_config(env_name: str) -> config_dict.ConfigDict:
       "SpotGetup",
       "SpotJoystickGaitTracking",
       "T1ObstacleAvoidance",
-      "T1LowDimObstacleAvoidance",
   ):
     pass  # use default config
   else:

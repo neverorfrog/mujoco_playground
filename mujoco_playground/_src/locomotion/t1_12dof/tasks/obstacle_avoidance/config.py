@@ -2,15 +2,83 @@
 Dataclass-based configuration for the Booster T1 joystick task.
 """
 
-from dataclasses import dataclass, field, asdict, replace
-from typing import List, Tuple, Dict, Any
+from dataclasses import dataclass, field, replace
+from typing import Tuple, Dict, Any
 import jax.numpy as jp
+from enum import IntEnum
+
+
+class Foot(IntEnum):
+    LEFT = 0
+    RIGHT = 1
+@dataclass
+class FootstepPlannerConfig:
+    """
+    Configuration for the footstep planner.
+    """
+    P: int = 300
+    """Number of timesteps to plan ahead. TODO: should be the same as episode length? """
+    W: int  = 20
+    """Number of steps in the preview window for ZMP trajectory generation (and reward heuristics)"""
+    dt: float = 0.02
+    """Time step duration for the planner. TODO: should be the same as episode step length? """
+    Tp: float = P * dt
+    """Total planning horizon in seconds."""
+    step_frequency: float = 1.0
+    """Steps per second (one step = swing phase + stance phase)"""
+    max_steps: int = 35
+    """Maximum steps to plan ahead. Should be >= Tp * step_frequency"""
+    first_swing: Foot = Foot.RIGHT
+    """Which foot is the first swing foot"""
+    step_width: float = 0.1
+    """Lateral foot separation from the pelvis. Depends on the robot dimensions"""
+    swing_percentage: float = 0.6
+    """Percentage duration of the swing phase for eajch step."""
+    peak_height: float = 0.05
+    """Desired height of each foot at peak phase."""
+    warmup_ds_factor: float = 1
+    """Number of warmup steps for the double support phase"""
+    theta_max: float = 0.25
+    """Maximum foot rotation angle during the swing phase [rad]"""
 
 @dataclass
 class SceneConfig:
-    obstacle_positions: jp.array = field(default_factory=lambda: 
-        jp.array([(1.75, 0.25), (-0.02, 0.1), (0.12, 0.17)]))
-    goal_position: jp.array = field(default_factory=lambda: jp.array([2.5, 0.0, 0.0]))
+    bins: int = 39
+    bin_size: float = 0.25
+    abs_gamma: float = 0.93
+    
+    def __post_init__(self):
+        self.width = self.bins * self.bin_size
+        self.height = self.bins * self.bin_size
+        self.origin = jp.array([ -self.width / 2, -self.height / 2 ])
+        self.obstacles = jp.array([[3, 0], [3, 1], [3, -1], [4, 1], [4, 0], [4, -1], [5, 1], [5, 0], [5, -1]]) 
+        self.goal = jp.array([12, 0])  # (x_idx, y_idx) position in the grid
+        self.num_obstacles = self.obstacles.shape[0]
+        
+    def map_to_world(self, map_pos: jp.ndarray, center: bool = True) -> jp.ndarray:
+        offset = 0.5 if center else 0.0  # fraction of bin_size
+        world_x = (map_pos[0] + offset) * self.bin_size
+        world_y = (map_pos[1] + offset) * self.bin_size
+        return jp.array([world_x, world_y])
+    
+    @property
+    def obstacle_positions(self):
+        """Convert obstacle indices to world positions at tile centers."""
+        positions = []
+        for idx in self.obstacles:
+            world_pos = self.map_to_world(idx, center=True)
+            world_x, world_y = world_pos[0], world_pos[1]
+            positions.append(jp.array([world_x, world_y, 0.0]))
+        return jp.array(positions)
+    
+    @property
+    def goal_position(self):
+        """Convert goal index to world position at tile center."""
+        world_pos = self.map_to_world(self.goal, center=True)
+        world_x, world_y = world_pos[0], world_pos[1]
+        return jp.array([world_x, world_y, 0.0])
+    
+
 
 @dataclass
 class RewardScales:
@@ -18,16 +86,22 @@ class RewardScales:
     # Tracking related rewards
     tracking_lin_vel_x: float = 1.0
     tracking_lin_vel_y: float = 1.0
-    tracking_ang_vel: float = 2.0
-    cost_to_goal_distance: float = 0.0
-    cost_to_goal_orientation: float = 0.0
-    reward_abstract_map: float = 0.1
+    tracking_ang_vel: float = 1.0
+    goal_orientation: float = 0.1
+    goal_distance: float = 0.05
+    
+    # Abstract Map
+    reward_map: float = 3.0
+    cost_collision: float = -10.0
+    cost_planner: float = 0.0
 
     # Base related rewards
     lin_vel_z: float = -2.0
     ang_vel_xy: float = -0.2
     orientation: float = -5.0
     base_height: float = -20.0
+    cost_linvel_rate: float = -0.0
+    cost_command_rate: float = 0.0
     
     # Energy related rewards
     torque_tiredness: float = -0.5e-2
@@ -40,7 +114,7 @@ class RewardScales:
     # Feet related rewards
     feet_slip: float = -0.1
     feet_air_time: float = 2.0
-    feet_distance: float = -10.0
+    feet_distance: float = -15.0
     feet_yaw_diff: float = -1.0
     feet_yaw_mean: float = -1.0
     feet_roll: float = -10.0
@@ -48,18 +122,19 @@ class RewardScales:
     feet_collision: float = -10.0
     
     # Other rewards
-    survival: float = 0.25
+    survival: float = 0.15
     root_acc: float = -1.0e-4
     dof_pos_limits: float = -1.0
-    goal_reached: float = 1.0
+    episode_failed: float = 1.0
     
 @dataclass
 class CurriculumConfig:
-    ramp_steps: int = 30000
-    tracking_lin_vel_x: float = 1.0
-    tracking_lin_vel_y: float = 1.0
-    cost_to_goal_distance: float = 0.0
-    cost_to_goal_orientation: float = 0.0
+    ramp_steps: int = 20000
+    tracking_lin_vel_x: float = 0.5
+    tracking_lin_vel_y: float = 0.5
+    tracking_ang_vel: float = 1.0
+    # cost_to_goal_distance: float = 0.0
+    # cost_to_goal_orientation: float = 0.0
 
 
 @dataclass
@@ -103,7 +178,7 @@ class ObstacleAvoidanceConfig:
     # Simulation parameters
     ctrl_dt: float = 0.02
     sim_dt: float = 0.002
-    episode_length: int = 500
+    episode_length: int = 1500
     action_repeat: int = 1
     action_scale: float = 1.0
     history_len: int = 1
@@ -114,6 +189,7 @@ class ObstacleAvoidanceConfig:
     noise_config: NoiseConfig = field(default_factory=NoiseConfig)
     reward_config: RewardConfig = field(default_factory=RewardConfig)
     push_config: PushConfig = field(default_factory=PushConfig)
+    planner_config: FootstepPlannerConfig = field(default_factory=FootstepPlannerConfig)
     
     # Command velocity ranges
     lin_vel_x: Tuple[float, float] = (-1.0, 1.0)

@@ -2,34 +2,69 @@ import jax.numpy as jp
 import jax
 import pygame
 import os
+from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance.config import SceneConfig
+from jax.scipy.signal import convolve2d
 
 class Map:
     """Abstract discrete map class for obstacle avoidance tasks."""
     
     _map: jp.ndarray
     
-    def __init__(self, bins: int, bin_size: float, goal: jp.ndarray, obstacles: jp.ndarray):
-        assert bins > 0 and bin_size > 0, "bins and bin_size must be positive"
-        self.bins = bins
-        self.bin_size = bin_size
-        self.goal = goal
-        self.obstacles = obstacles
-        self.width = self.bins * self.bin_size
-        self.height = self.bins * self.bin_size
-        self.origin = jp.array([ -self.width / 2, -self.height / 2 ])  # Bottom-right corner in world coordinates
-        self.abs_gamma = 0.9
-        self.FREE = -1.0  # Changed to float
-        self.GOAL = 0.0   # Changed to float
+    def __init__(self):
+        self.scene_config = SceneConfig()
+        self.bins = self.scene_config.bins
+        self.bin_size = self.scene_config.bin_size
+        self.goal = self.scene_config.goal_position
+        self.obstacles = self.scene_config.obstacle_positions
+        self.width = self.scene_config.width
+        self.height = self.scene_config.height
+        self.origin = self.scene_config.origin
+        self.abs_gamma = self.scene_config.abs_gamma
+        self.CARDINAL_COST = 1.0
+        self.DIAGONAL_COST = 1.5
+        self.FREE = -1.0
+        self.GOAL = 0.0
         self.OBSTACLE = 1000.0  # Changed to large float instead of 2 * bins
-        self._map = self._compute_costs(goal, obstacles)
-        self._xml = self.generate_scene_xml(goal, obstacles)
+        self.NEAR_OBSTACLE = 1.0  # Cost for cells adjacent to obstacles
+        self.NEAR_OBSTACLE_INFLATE = 1.0  # Inflation cost for cells adjacent to obstacles
+        self.directions = jp.array([
+            [1, 0], [-1, 0], [0, 1], [0, -1],  # Cardinal
+            [1, 1], [1, -1], [-1, 1], [-1, -1] # Diagonal
+        ])
+        self.cardinal_directions = jp.array([
+            [1, 0], [-1, 0], [0, 1], [0, -1]  # Cardinal
+        ])
+        self._map = self._compute_costs(self.goal, self.obstacles)
+        self._gradient = self._compute_gradient(self._map)
+        self._xml = self.generate_scene_xml(self.goal, self.obstacles)
         
         
+    def get_command(self, pos: jp.ndarray, robot_yaw: float) -> jp.ndarray:
+        """Get the unit vector command from the map gradient at a given world position."""
+        
+        # 1) Global desired velocity given by gradient at current position
+        map_pos = self.world_to_map(pos)
+        grad = self._gradient[map_pos[0], map_pos[1]]
+        
+        # 2) Desired LOCAL linear velocity (by rotating the world gradient)
+        c, s = jp.cos(robot_yaw), jp.sin(robot_yaw)
+        rot_matrix_transpose = jp.array([[c, s], [-s, c]])
+        desired_vel_local_xy = rot_matrix_transpose @ grad
+        desired_vel_local_xy = desired_vel_local_xy / (jp.linalg.norm(desired_vel_local_xy) * 2.0 + 1e-6)
+        
+        # 3) Desired LOCAL angular velocity (proportional to angle difference)
+        desired_yaw = jp.arctan2(grad[1], grad[0])
+        yaw_error = desired_yaw - robot_yaw
+        yaw_error = jp.arctan2(jp.sin(yaw_error), jp.cos(yaw_error))
+        kp_turn = 2.5 # Proportional gain for turning
+        desired_vel_local_w = kp_turn * yaw_error
+        
+        return jp.array([desired_vel_local_xy[0], desired_vel_local_xy[1], desired_vel_local_w])
         
     def world_to_map(self, pos: jp.ndarray) -> jp.ndarray:
         """
         Convert world coordinates to map indices
-        world: x points north, y points west, z points up
+        world: x points north, y points west
         discrete map: x are rows (points north), y are columns (points west)
         """
         pos = pos[:2]
@@ -47,24 +82,36 @@ class Map:
         
         return jp.array([map_x, map_y])
     
-    def get(self) -> jp.ndarray:
+    def map_to_world(self, map_pos: jp.ndarray, center: bool = True) -> jp.ndarray:
+        offset = 0.5 if center else 0.0  # fraction of bin_size
+        world_x = self.origin[0] + (map_pos[0] + offset) * self.bin_size
+        world_y = self.origin[1] + (map_pos[1] + offset) * self.bin_size
+        return jp.array([world_x, world_y])
+    
+    def get_map(self) -> jp.ndarray:
         return self._map
+    
+    def get_gradient(self) -> jp.ndarray:
+        return self._gradient
         
     def _compute_costs(self, goal: jp.ndarray, obstacles: jp.ndarray) -> jp.ndarray:
         map = jp.full((self.bins, self.bins), self.FREE, dtype=float)  # Changed to float
         
-        # Obstacles and origin are marked with high cost
+        # Obstacles are marked with high cost
         for obs in obstacles:
-            jax.debug.print("Obstacle at: {}", obs)
             obstacle = self.world_to_map(obs)
             map = map.at[obstacle[0], obstacle[1]].set(self.OBSTACLE)
-
+            for dir in self.cardinal_directions:
+                neighbor = obstacle + dir
+                if self.is_in_bounds(neighbor) and map[neighbor[0], neighbor[1]] != self.OBSTACLE:
+                    map = map.at[neighbor[0], neighbor[1]].set(self.NEAR_OBSTACLE)
+                    
         # Goal is marked with low cost (0)
         goal = self.world_to_map(goal)
         map = map.at[goal[0], goal[1]].set(self.GOAL)
 
         # BFS to fill in costs for free space
-        map = self.dijkstra(map)
+        map = self._dijkstra(map)
         self._map = map
         
         return map
@@ -72,35 +119,24 @@ class Map:
     def is_in_bounds(self, cell: jp.ndarray) -> bool:
         return jp.all(jp.logical_and(cell >= 0, cell < self.bins))
     
-    def get_cost(self, pos: jp.ndarray) -> float:  # Changed return type to float
-        """Get the cost of a world position."""
-        map_pos = self.world_to_map(pos)
-        cost = self._map[map_pos[0], map_pos[1]]
-        cost = 1.0 * (1.0 * jp.pow(self.abs_gamma, cost) - 1.0)
-        return cost
-    
-    def get_cost(self, pos: jp.ndarray, map: jp.ndarray) -> float:  # Changed return type to float
-        """Get the cost of a world position."""
+    def get_value(self, pos: jp.ndarray, map: jp.ndarray) -> float:  # Changed return type to float
+        """Get the value of a world position with respect to the map."""
         map_pos = self.world_to_map(pos)
         cost = map[map_pos[0], map_pos[1]]
-        cost = jp.pow(self.abs_gamma, cost)
-        return cost
+        value = jp.pow(self.abs_gamma, cost) - 1.0
+        return value
     
-    def dijkstra(self, map: jp.ndarray) -> jp.ndarray:
+    def _dijkstra(self, map: jp.ndarray) -> jp.ndarray:
         # Costs setup
-        CARDINAL_COST = 1.0
-        DIAGONAL_COST = jp.sqrt(2)
-        directions = jp.array([
-            [1, 0], [-1, 0], [0, 1], [0, -1],  # Cardinal
-            [1, 1], [1, -1], [-1, 1], [-1, -1] # Diagonal
-        ])
-        move_costs = jp.array([CARDINAL_COST] * 4 + [DIAGONAL_COST] * 4)
+
+        move_costs = jp.array([self.CARDINAL_COST] * 4 + [self.DIAGONAL_COST] * 4)
         cost_map = jp.full((self.bins, self.bins), jp.inf, dtype=jp.float32)
         cost_map = jp.where(map == self.GOAL, jp.array(self.GOAL, dtype=cost_map.dtype), cost_map)
         
         # obstacle map
         is_obstacle = (map == self.OBSTACLE)
-        
+        is_near_obstacle = (map == self.NEAR_OBSTACLE)
+
         # queue
         visited_mask = jp.zeros_like(map, dtype=bool)
         max_iterations = self.bins * self.bins
@@ -119,11 +155,12 @@ class Map:
                 
                 def update_neighbor(inner_carry, i):
                     cm = inner_carry
-                    direction, move_cost = directions[i], move_costs[i]
+                    direction, move_cost = self.directions[i], move_costs[i]
                     neighbor = current_pos + direction
                     
                     def update_cost(c):
                         new_cost = current_cost + move_cost
+                        new_cost = jp.where(is_near_obstacle[neighbor[0], neighbor[1]], new_cost + self.NEAR_OBSTACLE_INFLATE, new_cost)
                         old_cost = c[neighbor[0], neighbor[1]]
                         return c.at[neighbor[0], neighbor[1]].set(jp.minimum(old_cost, new_cost))
                     
@@ -139,7 +176,7 @@ class Map:
                 updated_cost_map, _ = jax.lax.scan(
                     update_neighbor,
                     cost_map,
-                    jp.arange(directions.shape[0])
+                    jp.arange(self.directions.shape[0])
                 )
                 
                 return updated_cost_map, new_visited_mask
@@ -168,6 +205,149 @@ class Map:
         
         return final_map
     
+    
+    def _compute_gradient(self, map: jp.ndarray) -> jp.ndarray:
+        # Simple gradient descent on Dijkstra costs
+        grad_x, grad_y = jp.gradient(-map, self.bin_size)
+        grad_final = jp.stack([grad_x, grad_y], axis=-1)
+        
+        # Normalize
+        norm = jp.linalg.norm(grad_final, axis=-1, keepdims=True)
+        grad_final = grad_final / (norm + 1e-6)
+        
+        # Zero at goal and obstacles
+        goal_idx = self.world_to_map(self.goal)
+        grad_final = grad_final.at[goal_idx[0], goal_idx[1]].set(jp.array([0.0, 0.0]))
+        grad_final = jp.where((map == self.OBSTACLE)[..., jp.newaxis], 0.0, grad_final)
+        
+        return grad_final
+
+    def plot_map_with_plan(
+        self, 
+        footstep_plan: 'FootstepPlan' = None,
+        zmp_trajectory: 'ZMPTrajectory' = None,
+        filename="map_with_plan.png"
+    ):
+        """Plot the map with footsteps and ZMP trajectory overlaid."""
+        if not pygame.get_init():
+            pygame.init()
+
+        # Font setup
+        font_emoji_path = None
+        for path in [
+            '/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf',
+            '/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf',
+        ]:
+            if os.path.exists(path):
+                font_emoji_path = path
+                break
+        font_emoji = pygame.font.Font(font_emoji_path, 5) if font_emoji_path else pygame.font.SysFont("Arial", 5)
+        font_text = pygame.font.SysFont("dejavusans", 24, bold=True)
+        font_small = pygame.font.SysFont("dejavusans", 20, bold=True)
+
+        # Flip map for display
+        disp_map = jp.flip(self._map, (0, 1))
+        max_cost = jp.max(disp_map, where=(disp_map != self.OBSTACLE) & (disp_map != self.FREE), initial=0)
+        
+        height, width = disp_map.shape
+        cell_size = 110
+        screen_width = width * cell_size
+        screen_height = height * cell_size
+        surface = pygame.Surface((screen_width, screen_height))
+        surface.fill((255, 255, 255))
+
+        # Draw base map
+        for i in range(height):
+            for j in range(width):
+                val = disp_map[i, j]
+                rect = pygame.Rect(j * cell_size, i * cell_size, cell_size, cell_size)
+                
+                bg_color = (200, 200, 200)
+                if val == self.OBSTACLE:
+                    bg_color = (50, 50, 50)
+                elif val != self.FREE:
+                    normalized_cost = float(val) / max_cost if max_cost > 0 else 0
+                    r = int(255 * normalized_cost)
+                    g = int(255 * (1 - normalized_cost))
+                    b = 0
+                    bg_color = (r, g, b)
+                
+                pygame.draw.rect(surface, bg_color, rect)
+                pygame.draw.rect(surface, (128, 128, 128), rect, 1)
+
+                is_emoji = False
+                text_str = ""
+                if val == self.GOAL:
+                    text_str, is_emoji = "🎯", True
+                elif val == self.OBSTACLE:
+                    text_str, is_emoji = "🧱", True
+                elif val != self.FREE:
+                    text_str = f"{val:.1f}"
+
+                text_color = (50, 50, 50)
+                if text_str:
+                    font_to_use = font_emoji if is_emoji else font_text
+                    text_surface = font_to_use.render(text_str, True, text_color)
+                    text_rect = text_surface.get_rect(center=rect.center)
+                    surface.blit(text_surface, text_rect)
+
+        def world_to_pixel(pos):
+            """Convert world [x, y] to pixel [px, py]"""
+            map_pos = pos[:2] - self.origin
+            map_x = map_pos[0] / self.bin_size
+            map_y = map_pos[1] / self.bin_size
+            
+            px = int((self.bins - map_y) * cell_size - cell_size / 2)
+            py = int((self.bins - map_x) * cell_size - cell_size / 2)
+            
+            return px, py
+        
+        # Draw ZMP trajectory if provided
+        if zmp_trajectory is not None:
+            zmp_x = zmp_trajectory.zmp_midpoints_x
+            zmp_y = zmp_trajectory.zmp_midpoints_y
+            
+            points = []
+            for i in range(len(zmp_x)):
+                px, py = world_to_pixel(jp.array([zmp_x[i], zmp_y[i]]))
+                points.append((px, py))
+            
+            if len(points) > 1:
+                pygame.draw.lines(surface, (0, 150, 255), False, points, 4)
+            
+            for px, py in points[::5]:
+                pygame.draw.circle(surface, (0, 100, 200), (px, py), 6)
+
+        # Draw footsteps if provided
+        if footstep_plan is not None:
+            num_steps = footstep_plan.num_steps
+            
+            for i in range(num_steps):
+                start_pose = footstep_plan.start_poses[i]
+                end_pose = footstep_plan.end_poses[i]
+                swing_foot = footstep_plan.swing_foot_ids[i]
+                
+                # Color based on foot (left = blue, right = red)
+                color = (100, 100, 255) if swing_foot == 0 else (255, 100, 100)
+                
+                # Draw start position (hollow)
+                px_start, py_start = world_to_pixel(start_pose)
+                pygame.draw.circle(surface, color, (px_start, py_start), 25, 4)
+                
+                # Draw end position (filled)
+                px_end, py_end = world_to_pixel(end_pose)
+                pygame.draw.circle(surface, color, (px_end, py_end), 30)
+                
+                # Draw step number
+                text = font_small.render(str(i), True, (0, 0, 0))
+                text_rect = text.get_rect(center=(px_end, py_end))
+                surface.blit(text, text_rect)
+
+        pygame.image.save(surface, filename)
+        pygame.quit()
+        print(f"Saved map with plan to {filename}")
+        
+    
     def __str__(self) -> str:
         # Emojis and colors for better visualization
         GOAL_EMOJI = " 🎯 "
@@ -186,9 +366,7 @@ class Map:
         for r_idx, row in enumerate(disp_map.tolist()):
             line = []
             for c_idx, val in enumerate(row):
-                if r_idx == self.bins // 2 and c_idx == self.bins // 2:
-                    line.append(START_EMOJI)
-                elif val == self.GOAL:
+                if val == self.GOAL:
                     line.append(GOAL_EMOJI)
                 elif val == self.OBSTACLE:
                     line.append(OBSTACLE_EMOJI)
@@ -206,7 +384,6 @@ class Map:
                     line.append(f"{bg_color}{jp.int32(val):^4}{RESET_COLOR}")  # Changed to float formatting
             lines.append("".join(line))
         return "\n".join(lines)
-    
     
     def plot_map(self, filename="map.png"):
         """Plot the abstract map and save as PNG with colors, emojis, and high-contrast numbers."""
@@ -266,9 +443,7 @@ class Map:
                 # --- KEY CHANGE: Select font and text based on cell content ---
                 is_emoji = False
                 text_str = ""
-                if i == center_i and j == center_j:
-                    text_str, is_emoji = "🤖", True
-                elif val == self.GOAL:
+                if val == self.GOAL:
                     text_str, is_emoji = "🎯", True
                 elif val == self.OBSTACLE:
                     text_str, is_emoji = "🧱", True
@@ -291,8 +466,39 @@ class Map:
         pygame.image.save(surface, filename)
         pygame.quit()
         
+    def print_gradient_map(self, thresh: float = 1e-3) -> None:
+        """Print compact ASCII gradient arrows (flipped to human view)."""
+        # Flip only the spatial axes — do NOT flip the vector-component axis.
+        disp_map = jp.flip(self._map, (0, 1))
+        disp_grad = jp.flip(self._gradient, (0, 1))
+
+        arrows = ["→", "↗", "↑", "↖", "←", "↙", "↓", "↘"]
+        lines = []
+        for i, row in enumerate(disp_grad.tolist()):
+            line = []
+            for j, vec in enumerate(row):
+                cell_val = float(disp_map[i, j])
+                if cell_val == self.OBSTACLE:
+                    line.append("o")
+                    continue
+                if cell_val == self.GOAL:
+                    line.append("🎯")
+                    continue
+                # vec is [gy, gx] (gradient returned as axis-0, axis-1).
+                gx = float(vec[1])
+                gy = -float(vec[0])  # negate because we flipped rows -> invert vertical axis
+                mag = (gx * gx + gy * gy) ** 0.5
+                if mag < thresh:
+                    line.append("·")
+                    continue
+                ang = jp.arctan2(gy, gx)  # radians in [-pi, pi]
+                # map angle to 0..7 octants
+                sector = int(((ang + jp.pi) / (2 * jp.pi) * 8)) % 8
+                line.append(arrows[sector])
+            lines.append(" ".join(line))
+        print("\n".join(lines))
         
-    
+        
     def generate_scene_xml(self, goal: jp.ndarray = jp.array([3.0, 2.0, 0.01]), obstacles: jp.ndarray = jp.array([])) -> str:
         """
         Generate a MuJoCo XML scene based on Map parameters.
@@ -332,7 +538,7 @@ class Map:
     
       <worldbody>
         <!-- Ground plane -->
-        <geom name="floor" size="0 0 0.01" type="plane" material="groundplane" priority="1" friction="0.8" contype="1" conaffinity="2" condim="3" pos="{self.bin_size/2.0} {self.bin_size/2.0} 0"/>
+        <geom name="floor" size="0 0 0.01" type="plane" material="groundplane" priority="1" friction="0.8" contype="1" conaffinity="2" condim="3" pos="0.0 0.0 0"/>
     
         <!-- Vertical walls (static, adjusted to map extent) -->
         <geom name="wall_pos_x" type="box" size="{wall_thickness} {half_width} {wall_height}" pos="{half_width} 0 {wall_height}" material="wall_mat"
@@ -350,15 +556,11 @@ class Map:
         # Add obstacles from the map, indexed from 0 onward
         obstacle_xml = ""
         obstacle_index = 0
-        for i in range(self.bins):
-            for j in range(self.bins):
-                if self._map[i, j] == self.OBSTACLE:
-                    # Convert map indices back to world coords (center of bin)
-                    world_x = (i - self.bins // 2) * self.bin_size + self.bin_size / 2
-                    world_y = (j - self.bins // 2) * self.bin_size + self.bin_size / 2
-                    obstacle_xml += f"""        <geom name="obstacle_{obstacle_index}" type="cylinder" size="{self.bin_size / 2.2} {self.bin_size / 2.2}" pos="{world_x} {world_y} 0.125" material="obstacle_mat"
-              contype="1" conaffinity="2" friction="0.9 0.1 0.01"/>\n"""
-                    obstacle_index += 1
+        for obstacle in self.obstacles:
+            obstacle_xml += f"""        <geom name="obstacle_{obstacle_index}" type="cylinder" size="{self.bin_size / 2.2} {self.bin_size / 2.2}" pos="{obstacle[0]} {obstacle[1]} 0.1" material="obstacle_mat"
+                    contype="1" conaffinity="2" friction="0.9 0.1 0.01"/>\n"""
+            obstacle_index += 1
+ 
         
         # Add goal and start sites
         sites_xml = f"""
@@ -385,54 +587,26 @@ class Map:
         
         # Combine and write to file
         full_xml = xml_template + obstacle_xml + sites_xml
-        with open(f"/home/neverorfrog/code/loco_rlmpc/mujoco_playground/mujoco_playground/_src/locomotion/t1_12dof/xmls/scene_obstacle_avoidance.xml", "w") as f:
-            f.write(full_xml)
+        # with open(f"/home/neverorfrog/code/loco_rlmpc/mujoco_playground/mujoco_playground/_src/locomotion/t1_12dof/xmls/scene_obstacle_avoidance.xml", "w") as f:
+            # f.write(full_xml)
         print(f"Generated scene_obstacle_avoidance.xml with {self.bins}x{self.bins} tiles, bin_size={self.bin_size}")
         return full_xml
   
 if __name__ == "__main__":
-    goal = jp.array([5.0, 0.0, 0.0])
-    obstacles = jp.array([
-        [2.5, 0.5, 0.0],
-        [2.5, 0.0, 0.0],
-        [2.5, -0.5, 0.0],
-    ])
-    map = Map(bins = 35, bin_size = 0.49, goal=goal, obstacles=obstacles)
+    map = Map()
+    
+    disp_map = jp.flip(map._map, (0, 1))
+    disp_grad = jp.flip(map._gradient, (0, 1, 2))
+    # disp_grad = map._gradient  # shape (H, W, 2)
+    # for i in range(map.bins):
+    #     for j in range(map.bins):
+    #         print(f"Cell ({i}, {j}): Cost={disp_map[i, j]}, Gradient={disp_grad[i, j]}")
+    
     print(map)
+    map.print_gradient_map()
+    command = map.get_command(jp.array([0.7, 0.0, 0.0]), 0.0)
+    print(f"Command at origin facing north: {command}")
+    map.plot_map("test_map.png")
     
     # U-shaped obstacle
     # obstacles = jp.array([
-    #     [2.0, 1.0, 0.0],
-    #     [2.0, 0.75, 0.0],
-    #     [2.0, 0.5, 0.0],
-    #     [2.0, 0.25, 0.0],
-    #     [2.0, 0.0, 0.0],
-    #     [2.0, -0.25, 0.0],
-    #     [2.0, -0.5, 0.0],
-    #     [2.0, -0.75, 0.0],
-    #     [2.0, -1.0, 0.0],
-        
-    #     [1.75, 1.0, 0.0],
-    #     [1.5, 1.0, 0.0],
-    #     [1.25, 1.0, 0.0],
-    #     [1.0, 1.0, 0.0],
-    #     [0.75, 1.0, 0.0],
-    #     [0.5, 1.0, 0.0],
-    #     [0.25, 1.0, 0.0],
-    #     [0.0, 1.0, 0.0],
-    #     [-0.25, 1.0, 0.0],
-    #     [-0.5, 1.0, 0.0],
-        
-    #     [1.75, -1.0, 0.0],
-    #     [1.5, -1.0, 0.0],
-    #     [1.25, -1.0, 0.0],
-    #     [1.0, -1.0, 0.0],
-    #     [0.75, -1.0, 0.0],
-    #     [0.5, -1.0, 0.0],
-    #     [0.25, -1.0, 0.0],
-    #     [0.0, -1.0, 0.0],
-    #     [-0.25, -1.0, 0.0],
-    #     [-0.5, -1.0, 0.0],
-    # ])
-    map.plot_map("test_map.png")
-    

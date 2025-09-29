@@ -15,12 +15,18 @@ class FootstepPlannerConfig:
     """
     Configuration for the footstep planner.
     """
-    P: int = 500
+    P: int = 101
+    C: int = 20
     """Number of timesteps to plan ahead. TODO: should be the same as episode length? """
-    dt: float = 0.02
+    dt: float = 0.1
     """Time step duration for the planner. TODO: should be the same as episode step length? """
     Tp: float = P * dt
+    Tc: float = C * dt
     """Total planning horizon in seconds."""
+    step_frequency: float = 1.0
+    """Steps per second (one step = swing phase + stance phase)"""
+    max_steps: int = 35
+    """Maximum steps to plan ahead. Should be >= Tp * step_frequency"""
     first_swing: Foot = Foot.RIGHT
     """Which foot is the first swing foot"""
     step_width: float = 0.1
@@ -31,11 +37,8 @@ class FootstepPlannerConfig:
     """Desired height of each foot at peak phase."""
     warmup_ds_factor: float = 1
     """Number of warmup steps for the double support phase"""
-    step_frequency: float = 1.0
-    """ Steps per second (one step = swing phase + stance phase)"""
     theta_max: float = 0.25
     """Maximum foot rotation angle during the swing phase [rad]"""
-
 
 @dataclass
 class Footstep:
@@ -73,6 +76,9 @@ class FootstepPlan:
     zmp_midpoints_x: jp.ndarray = None
     zmp_midpoints_y: jp.ndarray = None
     zmp_midpoints_theta: jp.ndarray = None
+    zmp_velocities_x: jp.ndarray = None
+    zmp_velocities_y: jp.ndarray = None
+    zmp_velocities_theta: jp.ndarray = None
 
 
 class FootstepPlanner:
@@ -110,13 +116,14 @@ class FootstepPlanner:
 
         # Derived quantities
         step_duration = 1.0 / step_frequency
-        num_steps = int((P * dt) / step_duration)
+        num_steps = jp.int32(jp.ceil(step_frequency * self.config.Tp))
+        num_steps = jp.minimum(num_steps, self.config.max_steps)
         nominal_ss_duration = swing_percentage * step_duration
         nominal_ds_duration = step_duration - nominal_ss_duration
 
         # Initialization
         pelvis_pos = 0.5 * (left_foot_pose[:2] + right_foot_pose[:2])
-        pelvis_theta = float(
+        pelvis_theta = jp.float32(
             self._wrap_angle(0.5 * (left_foot_pose[2] + right_foot_pose[2]))
         )
         t = start_time
@@ -124,13 +131,13 @@ class FootstepPlanner:
         R = right_foot_pose.copy()
 
         # Pre-allocate arrays for JAX loop
-        swing_foot_ids = jp.zeros(num_steps, dtype=jp.int32)
-        start_poses = jp.zeros((num_steps, 3))
-        end_poses = jp.zeros((num_steps, 3))
-        support_poses = jp.zeros((num_steps, 3))
-        start_times = jp.zeros(num_steps)
-        ds_start_times = jp.zeros(num_steps)
-        end_times = jp.zeros(num_steps)
+        swing_foot_ids = jp.zeros(self.config.max_steps, dtype=jp.int32)
+        start_poses = jp.zeros((self.config.max_steps, 3))
+        end_poses = jp.zeros((self.config.max_steps, 3))
+        support_poses = jp.zeros((self.config.max_steps, 3))
+        start_times = jp.zeros(self.config.max_steps)
+        ds_start_times = jp.zeros(self.config.max_steps)
+        end_times = jp.zeros(self.config.max_steps)
 
         init_val = (
             pelvis_pos,
@@ -149,96 +156,109 @@ class FootstepPlanner:
         )
 
         def step_iteration(j, val):
-            (
-                pelvis_pos,
-                pelvis_theta,
-                t,
-                L,
-                R,
-                swing_foot,
-                swing_foot_ids,
-                start_poses,
-                end_poses,
-                support_poses,
-                start_times,
-                ds_start_times,
-                end_times,
-            ) = val
+            def do_update(val):
+                (
+                    pelvis_pos,
+                    pelvis_theta,
+                    t,
+                    L,
+                    R,
+                    swing_foot,
+                    swing_foot_ids,
+                    start_poses,
+                    end_poses,
+                    support_poses,
+                    start_times,
+                    ds_start_times,
+                    end_times,
+                ) = val
 
-            # Determine step durations (virtual first step has no swing)
-            ss_duration = jp.where(j == 0, 0.0, nominal_ss_duration)
-            ds_duration = jp.where(
-                j == 0, warmup_ds_factor * step_duration, nominal_ds_duration
+                # Determine step durations (virtual first step has no swing)
+                ss_duration = jp.where(j == 0, 0.0, nominal_ss_duration)
+                ds_duration = jp.where(
+                    j == 0, warmup_ds_factor * step_duration, nominal_ds_duration
+                )
+                
+                # Step timing
+                ss_start = t
+                ds_start = t + ss_duration
+                end_t = t + ss_duration + ds_duration
+
+                # Determine start and end poses for the swing foot
+                def first_step_poses(_):
+                    start_pose = jp.where(swing_foot == Foot.RIGHT, L, R)
+                    return pelvis_pos, pelvis_theta, start_pose, start_pose, start_pose, L, R
+
+                def step_poses(_):
+                    # Foot.LEFT is 0, Foot.RIGHT is 1. We want lateral offset to be
+                    # positive for LEFT and negative for RIGHT.
+                    dtheta = jp.clip(w * step_duration, -theta_max, theta_max)
+                    theta_midpoint = self._wrap_angle(pelvis_theta + 0.5 * dtheta)
+                    pelvis_theta_new = self._wrap_angle(pelvis_theta + dtheta)
+                    dpos = jp.array([vx * step_duration, vy * step_duration])
+                    dpos_world = self._rot(theta_midpoint) @ dpos
+                    pelvis_pos_new = pelvis_pos + dpos_world
+                    lateral_sign = jp.where(swing_foot == Foot.LEFT, 1.0, -1.0)
+                    lateral_offset = self._rot(pelvis_theta_new) @ jp.array(
+                        [0.0, lateral_sign * step_width]
+                    )
+                    end_pos = pelvis_pos_new + lateral_offset
+                    end_pose_new = jp.array([end_pos[0], end_pos[1], pelvis_theta_new])
+
+                    start_pose = jp.where(swing_foot == Foot.RIGHT, R, L)
+                    support_pose = jp.where(swing_foot == Foot.RIGHT, L, R)
+                    new_R = jp.where(swing_foot == Foot.RIGHT, end_pose_new, R)
+                    new_L = jp.where(swing_foot == Foot.LEFT, end_pose_new, L)
+                    return pelvis_pos_new, pelvis_theta_new, start_pose, end_pose_new, support_pose, new_L, new_R
+
+                pelvis_pos_new, pelvis_theta_new, start_pose, end_pose, support_pose, next_L, next_R = jax.lax.cond(
+                    j == 0, first_step_poses, step_poses, operand=None
+                )
+
+                # Store results for the current step
+                swing_foot_ids = swing_foot_ids.at[j].set(swing_foot)
+                start_poses = start_poses.at[j].set(start_pose)
+                end_poses = end_poses.at[j].set(end_pose)
+                support_poses = support_poses.at[j].set(support_pose)
+                start_times = start_times.at[j].set(ss_start)
+                ds_start_times = ds_start_times.at[j].set(ds_start)
+                end_times = end_times.at[j].set(end_t)
+
+                # Update state for the next iteration
+                pelvis_pos, pelvis_theta, t = pelvis_pos_new, pelvis_theta_new, end_t
+                L, R = next_L, next_R
+
+                # Switch swing foot (0->1, 1->0), but not after the virtual first step
+                next_swing_foot = 1 - swing_foot
+                swing_foot = jp.where(j > 0, next_swing_foot, swing_foot)
+
+                return (
+                    pelvis_pos,
+                    pelvis_theta,
+                    t,
+                    L,
+                    R,
+                    swing_foot,
+                    swing_foot_ids,
+                    start_poses,
+                    end_poses,
+                    support_poses,
+                    start_times,
+                    ds_start_times,
+                    end_times,
+                )
+            
+            def skip_update(val):
+                return val  # Return unchanged
+            
+            new_val = jax.lax.cond(
+                j < num_steps, 
+                do_update, 
+                skip_update, 
+                operand=val
             )
             
-            # Step timing
-            ss_start = t
-            ds_start = t + ss_duration
-            end_t = t + ss_duration + ds_duration
-
-            # Determine start and end poses for the swing foot
-            def first_step_poses(_):
-                start_pose = jp.where(swing_foot == Foot.RIGHT, L, R)
-                return pelvis_pos, pelvis_theta, start_pose, start_pose, start_pose, L, R
-
-            def step_poses(_):
-                # Foot.LEFT is 0, Foot.RIGHT is 1. We want lateral offset to be
-                # positive for LEFT and negative for RIGHT.
-                dtheta = jp.clip(w * step_duration, -theta_max, theta_max)
-                theta_midpoint = self._wrap_angle(pelvis_theta + 0.5 * dtheta)
-                pelvis_theta_new = self._wrap_angle(pelvis_theta + dtheta)
-                dpos = jp.array([vx * step_duration, vy * step_duration])
-                dpos_world = self._rot(theta_midpoint) @ dpos
-                pelvis_pos_new = pelvis_pos + dpos_world
-                lateral_sign = jp.where(swing_foot == Foot.LEFT, 1.0, -1.0)
-                lateral_offset = self._rot(pelvis_theta_new) @ jp.array(
-                    [0.0, lateral_sign * step_width]
-                )
-                end_pos = pelvis_pos_new + lateral_offset
-                end_pose_new = jp.array([end_pos[0], end_pos[1], pelvis_theta_new])
-
-                start_pose = jp.where(swing_foot == Foot.RIGHT, R, L)
-                support_pose = jp.where(swing_foot == Foot.RIGHT, L, R)
-                new_R = jp.where(swing_foot == Foot.RIGHT, end_pose_new, R)
-                new_L = jp.where(swing_foot == Foot.LEFT, end_pose_new, L)
-                return pelvis_pos_new, pelvis_theta_new, start_pose, end_pose_new, support_pose, new_L, new_R
-
-            pelvis_pos_new, pelvis_theta_new, start_pose, end_pose, support_pose, next_L, next_R = jax.lax.cond(
-                j == 0, first_step_poses, step_poses, operand=None
-            )
-
-            # Store results for the current step
-            swing_foot_ids = swing_foot_ids.at[j].set(swing_foot)
-            start_poses = start_poses.at[j].set(start_pose)
-            end_poses = end_poses.at[j].set(end_pose)
-            support_poses = support_poses.at[j].set(support_pose)
-            start_times = start_times.at[j].set(ss_start)
-            ds_start_times = ds_start_times.at[j].set(ds_start)
-            end_times = end_times.at[j].set(end_t)
-
-            # Update state for the next iteration
-            pelvis_pos, pelvis_theta, t = pelvis_pos_new, pelvis_theta_new, end_t
-            L, R = next_L, next_R
-
-            # Switch swing foot (0->1, 1->0), but not after the virtual first step
-            next_swing_foot = 1 - swing_foot
-            swing_foot = jp.where(j > 0, next_swing_foot, swing_foot)
-
-            return (
-                pelvis_pos,
-                pelvis_theta,
-                t,
-                L,
-                R,
-                swing_foot,
-                swing_foot_ids,
-                start_poses,
-                end_poses,
-                support_poses,
-                start_times,
-                ds_start_times,
-                end_times,
-            )
+            return new_val
 
         (
             *_,
@@ -249,7 +269,7 @@ class FootstepPlanner:
             start_times,
             ds_start_times,
             end_times,
-        ) = jax.lax.fori_loop(0, num_steps, step_iteration, init_val)
+        ) = jax.lax.fori_loop(0, self.config.max_steps, step_iteration, init_val)
 
         footstep_plan = FootstepPlan(
             swing_foot_ids=swing_foot_ids,
@@ -265,9 +285,15 @@ class FootstepPlanner:
         zmp_x, zmp_y, zmp_theta = self.compute_zmp_midpoints(
             footstep_plan, left_foot_pose, right_foot_pose, start_time
         )
+        zmp_vel_x, zmp_vel_y, zmp_vel_theta = self.compute_zmp_velocities(
+            zmp_x, zmp_y, zmp_theta
+        )
         footstep_plan.zmp_midpoints_x = zmp_x
         footstep_plan.zmp_midpoints_y = zmp_y
         footstep_plan.zmp_midpoints_theta = zmp_theta
+        footstep_plan.zmp_velocities_x = zmp_vel_x
+        footstep_plan.zmp_velocities_y = zmp_vel_y
+        footstep_plan.zmp_velocities_theta = zmp_vel_theta
         self.footstep_plan = footstep_plan
         return footstep_plan
 
@@ -302,17 +328,25 @@ class FootstepPlanner:
         Returns:
             Tuple of (zmp_midpoints_x, zmp_midpoints_y, zmp_midpoints_theta)
         """
-        time = jp.linspace(0.0, self.config.Tp, self.config.P)
+        time = jp.linspace(0.0, self.config.Tc, self.config.C)
         num_steps = footstep_plan.swing_foot_ids.shape[0]
         
+        jax.debug.print("   Time vector: {}", time)
+        
         def process_footstep(i: int, zmp_midpoints: Tuple[jp.ndarray, jp.ndarray, jp.ndarray]) -> Tuple[jp.ndarray, jp.ndarray, jp.ndarray]:
+            jax.debug.print("   \nProcessing footstep index: {}", i)
+            # jax.debug.print("       Footstep start pose: ({:.3f}, {:.3f}), theta: {:.3f}", footstep_plan.start_poses[i][0], footstep_plan.start_poses[i][1], footstep_plan.start_poses[i][2])
+            # jax.debug.print("       Footstep end pose: ({:.3f}, {:.3f}), theta: {:.3f}", footstep_plan.end_poses[i][0], footstep_plan.end_poses[i][1], footstep_plan.end_poses[i][2])
+            
             zmp_x, zmp_y, zmp_theta = zmp_midpoints
             
             # Get footstep data
             start_pose = footstep_plan.support_poses[i]
             end_pose = footstep_plan.end_poses[i]
+            ss_start = footstep_plan.start_times[i]
             ds_start_time = footstep_plan.ds_start_times[i]
             end_time = footstep_plan.end_times[i]
+            duration = end_time - ds_start_time
             
             # For the first footstep, use current ZMP position as start
             start_x = jp.where(i == 0, zmp_x[0], start_pose[0])
@@ -332,10 +366,14 @@ class FootstepPlanner:
             zmp_y = zmp_y + sigma * (end_y - start_y)
             zmp_theta = zmp_theta + sigma * (end_theta - start_theta)
             
+            jax.debug.print("       Updated ZMP midpoints x: {}", zmp_x)
+            jax.debug.print("       Updated ZMP midpoints y: {}", zmp_y)
+            jax.debug.print("       Updated ZMP midpoints theta: {}", zmp_theta)
+
             return (zmp_x, zmp_y, zmp_theta)
         
         relevant_steps = jp.where(
-            (footstep_plan.ds_start_times < current_time + self.config.Tp) &
+            (footstep_plan.ds_start_times < current_time + self.config.Tc) &
             (footstep_plan.end_times > current_time),
             jp.arange(num_steps),
             -1
@@ -351,9 +389,9 @@ class FootstepPlanner:
             )
         
         midpoint = 0.5 * (left_foot_pose + right_foot_pose)
-        zmp_midpoints_x = jp.full(self.config.P, midpoint[0])
-        zmp_midpoints_y = jp.full(self.config.P, midpoint[1])
-        zmp_midpoints_theta = jp.full(self.config.P, midpoint[2])
+        zmp_midpoints_x = jp.full(self.config.C, midpoint[0])
+        zmp_midpoints_y = jp.full(self.config.C, midpoint[1])
+        zmp_midpoints_theta = jp.full(self.config.C, midpoint[2])
         
         zmp_midpoints_x, zmp_midpoints_y, zmp_midpoints_theta = jax.lax.fori_loop(
             0, num_steps, 
@@ -362,6 +400,30 @@ class FootstepPlanner:
         )
         
         return zmp_midpoints_x, zmp_midpoints_y, zmp_midpoints_theta
+    
+    def compute_zmp_velocities(
+        self,
+        zmp_midpoints_x: jp.ndarray,
+        zmp_midpoints_y: jp.ndarray,
+        zmp_midpoints_theta: jp.ndarray,
+    ) -> Tuple[jp.ndarray, jp.ndarray, jp.ndarray]:
+        """
+        Compute ZMP velocities using finite differences.
+        
+        Args:
+            zmp_midpoints_x: ZMP midpoints in x direction
+            zmp_midpoints_y: ZMP midpoints in y direction
+            zmp_midpoints_theta: ZMP midpoints in theta direction
+            
+        Returns:
+            Tuple of (zmp_velocities_x, zmp_velocities_y, zmp_velocities_theta)
+        """
+        dt = self.config.dt
+        zmp_velocities_x = jp.gradient(zmp_midpoints_x, dt)
+        zmp_velocities_y = jp.gradient(zmp_midpoints_y, dt)
+        zmp_velocities_theta = jp.gradient(zmp_midpoints_theta, dt)
+        
+        return zmp_velocities_x, zmp_velocities_y, zmp_velocities_theta
 
     def _sigma_function(self, time: jp.ndarray, t0: float, t1: float) -> jp.ndarray:
         """
@@ -386,7 +448,15 @@ class FootstepPlanner:
     
 if __name__ == "__main__":
     planner = FootstepPlanner()
-    command = jp.array([0.2, 0.0, 0.0])
+    command = jp.array([0.5, 0.0, 0.0])
     left_foot_pose = jp.array([0.0, 0.1, 0.0])
     right_foot_pose = jp.array([0.0, -0.1, 0.0])
-    plan = planner.plan(command, left_foot_pose, right_foot_pose)
+    fs_plan = planner.plan(command, left_foot_pose, right_foot_pose)
+    num_steps = jp.int32(jp.ceil(planner.config.step_frequency * planner.config.Tp))
+    print("\nPlanned Footsteps:")
+    for i in range(num_steps):
+        print(f"\nStep {i}: Swing foot: {'L' if fs_plan.swing_foot_ids[i] == Foot.LEFT else 'R'}")
+        print(f"  Start pose: {fs_plan.start_poses[i]}")
+        print(f"  End pose: {fs_plan.end_poses[i]}")
+        print(f"  Support pose: {fs_plan.support_poses[i]}")
+        print(f"  Start time: {fs_plan.start_times[i]:.3f}, DS start time: {fs_plan.ds_start_times[i]:.3f}, End time: {fs_plan.end_times[i]:.3f}")

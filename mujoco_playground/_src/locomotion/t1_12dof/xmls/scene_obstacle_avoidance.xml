@@ -3,7 +3,7 @@
       <include file="t1_12dof.xml"/>
     
       <!-- Camera/statistics adjusted to arena -->
-      <statistic center="0.0 0.0 0.7" extent="18.15" meansize="0.04"/>
+      <statistic center="0.0 0.0 0.7" extent="10.75" meansize="0.04"/>
     
       <visual>
         <headlight diffuse="0.55 0.55 0.55" ambient="0.45 0.45 0.45" specular="0.35 0.35 0.35"/>
@@ -17,7 +17,7 @@
       <asset>
         <texture type="skybox" builtin="gradient" rgb1="1 1 1" rgb2="1 1 1" width="800" height="800"/>
         <texture type="2d" name="groundplane" builtin="checker" rgb1="0.5 0.5 0.5" rgb2="0.28 0.30 0.34" width="600" height="600"/>
-        <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="2 2" reflectance="0"/>
+        <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="4 4" reflectance="0"/>
         <material name="wall_mat" rgba="0.25 0.25 0.28 1"/>
         <material name="obstacle_mat" rgba="0.8 0.3 0.1 1"/>
         <material name="goal_mat" rgba="0 0.8 0.2 1"/>
@@ -25,29 +25,31 @@
     
       <worldbody>
         <!-- Ground plane -->
-        <geom name="floor" size="0 0 0.01" type="plane" material="groundplane" priority="1" friction="0.8" contype="1" conaffinity="2" condim="3" pos="0.245 0.245 0"/>
+        <geom name="floor" size="0 0 0.01" type="plane" material="groundplane" priority="1" friction="0.8" contype="1" conaffinity="2" condim="3" pos="0.125 0.125 0"/>
     
         <!-- Vertical walls (static, adjusted to map extent) -->
-        <geom name="wall_pos_x" type="box" size="0.04 8.575 0.5" pos="8.575 0 0.5" material="wall_mat"
+        <geom name="wall_pos_x" type="box" size="0.04 4.875 0.5" pos="4.875 0 0.5" material="wall_mat"
               contype="1" conaffinity="2" friction="0.8 0.1 0.01"/>
-        <geom name="wall_neg_x" type="box" size="0.04 8.575 0.5" pos="-8.575 0 0.5" material="wall_mat"
+        <geom name="wall_neg_x" type="box" size="0.04 4.875 0.5" pos="-4.875 0 0.5" material="wall_mat"
               contype="1" conaffinity="2" friction="0.8 0.1 0.01"/>
-        <geom name="wall_pos_y" type="box" size="8.575 0.04 0.5" pos="0 8.575 0.5" material="wall_mat"
+        <geom name="wall_pos_y" type="box" size="4.875 0.04 0.5" pos="0 4.875 0.5" material="wall_mat"
               contype="1" conaffinity="2" friction="0.8 0.1 0.01"/>
-        <geom name="wall_neg_y" type="box" size="8.575 0.04 0.5" pos="0 -8.575 0.5" material="wall_mat"
+        <geom name="wall_neg_y" type="box" size="4.875 0.04 0.5" pos="0 -4.875 0.5" material="wall_mat"
               contype="1" conaffinity="2" friction="0.8 0.1 0.01"/>
     
         <!-- Dynamic obstacles based on map -->
-            <geom name="obstacle_0" type="cylinder" size="0.22272727272727272 0.22272727272727272" pos="2.6950000000000003 -0.245 0.125" material="obstacle_mat"
+            <geom name="obstacle_0" type="cylinder" size="0.11363636363636363 0.11363636363636363" pos="1.125 -0.125 0.1" material="obstacle_mat"
               contype="1" conaffinity="2" friction="0.9 0.1 0.01"/>
-        <geom name="obstacle_1" type="cylinder" size="0.22272727272727272 0.22272727272727272" pos="2.6950000000000003 0.245 0.125" material="obstacle_mat"
+        <geom name="obstacle_1" type="cylinder" size="0.11363636363636363 0.11363636363636363" pos="1.125 0.125 0.1" material="obstacle_mat"
               contype="1" conaffinity="2" friction="0.9 0.1 0.01"/>
-        <geom name="obstacle_2" type="cylinder" size="0.22272727272727272 0.22272727272727272" pos="2.6950000000000003 0.735 0.125" material="obstacle_mat"
+        <geom name="obstacle_2" type="cylinder" size="0.11363636363636363 0.11363636363636363" pos="1.125 0.375 0.1" material="obstacle_mat"
+              contype="1" conaffinity="2" friction="0.9 0.1 0.01"/>
+        <geom name="obstacle_3" type="cylinder" size="0.11363636363636363 0.11363636363636363" pos="1.125 0.625 0.1" material="obstacle_mat"
               contype="1" conaffinity="2" friction="0.9 0.1 0.01"/>
 
         <!-- GOAL & START SITES -->
         <site name="start" pos="0 0 0.01" size="0.05" type="sphere" rgba="0.2 0.2 0.9 0.6"/>
-        <site name="goal" pos="5.0 0.0 0.0" size="0.08" type="sphere" material="goal_mat" rgba="0 0.8 0.2 0.9"/>
+        <site name="goal" pos="3.0 0.0 0.0" size="0.08" type="sphere" material="goal_mat" rgba="0 0.8 0.2 0.9"/>
         </worldbody>
         
         <keyframe>

@@ -15,8 +15,6 @@ from mujoco import mjx
 from mujoco_playground._src import gait
 from mujoco_playground._src.collision import geoms_colliding
 from .config import RewardConfig
-from .planner import FootstepPlanner
-from .abstract_map import AbstractMap
 
 if TYPE_CHECKING:  # pragma: no cover
     from .env import ObstacleAvoidance
@@ -27,7 +25,7 @@ class ObstacleAvoidanceRewards:
     def __init__(self, env: 'ObstacleAvoidance'):
         self.env = env
         self.config = RewardConfig()
-        self.planner = FootstepPlanner()
+        # self.planner = FootstepPlanner()
         
     def get(
         self,
@@ -50,9 +48,13 @@ class ObstacleAvoidanceRewards:
             "tracking_lin_vel_x": self._reward_tracking_lin_vel_axis(0, cmd, lin_f),
             "tracking_lin_vel_y": self._reward_tracking_lin_vel_axis(1, cmd, lin_f),
             "tracking_ang_vel": self._reward_tracking_ang_vel(cmd, ang_f),
-            # "cost_to_goal_distance": self._cost_to_goal_distance(info),
-            # "cost_to_goal_orientation": self._cost_to_goal_orientation(data, info),
-            # "reward_abstract_map": self._reward_abstract_map(data, info),
+            "goal_orientation": self._reward_goal_orientation(data, info),
+            "reward_map": self._reward_map(data, info),
+            "cost_collision": self._cost_collision(data),
+            "cost_linvel_rate": self._cost_linvel_rate(info),
+            "goal_distance": self._cost_to_goal_distance(info),
+            # "cost_command_rate": self._cost_command_rate(info),
+            # "cost_planner": self._cost_planner(data, info),
 
             # Base-related rewards.
             "lin_vel_z": self._cost_lin_vel_z(lin_f),
@@ -114,17 +116,74 @@ class ObstacleAvoidanceRewards:
         """Tracks the goal distance to the goal"""
         return jp.sqrt(jp.square(info["rel_goal"][0]) + jp.square(info["rel_goal"][1]))
     
-    def _cost_to_goal_orientation(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
+    def _reward_goal_orientation(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
         """Penalty for yaw misalignment between base heading and the direction to the goal."""
-        gx, gy = info["rel_goal"][0], info["rel_goal"][1]
-        bearing = jp.arctan2(gy, gx)
-        return jp.square(bearing)
+        torso_R = data.site_xmat[self.env._site_id]
+        robot_yaw = jp.arctan2(torso_R[1, 0], torso_R[0, 0])
+        
+        pos = data.qpos[:2]
+        map_pos = self.env.map.world_to_map(pos)
+        grad = info["gradient"][map_pos[0], map_pos[1]]
+        desired_yaw = jp.arctan2(grad[1], grad[0])
+        
+        # Wrap the yaw difference to [-π, π] for periodicity
+        yaw_diff = jp.fmod(robot_yaw - desired_yaw + jp.pi, 2 * jp.pi) - jp.pi
+        err = jp.square(yaw_diff)
+        return jp.exp(-err / self.config.tracking_sigma)
+
+    def _reward_map(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
+        """Reward based on the map cost at the robot's current position."""
+        root_pos = data.qpos[:2]  # Use root joint position as reference
+        root_pos_reward = self.env.map.get_value(root_pos, info["map"])
+        return root_pos_reward
+
+    def _cost_collision(self, data: mjx.Data) -> jax.Array:
+        """Checks if the left and right foot geometry boxes are colliding with any obstacles."""
+        left_foot_coll = jp.array(0.0)
+        right_foot_coll = jp.array(0.0)
+        for id in self.env._obstacle_geom_ids:
+            left_foot_coll = geoms_colliding(data, self.env._left_foot_box_geom_id, id)
+            right_foot_coll = geoms_colliding(data, self.env._right_foot_box_geom_id, id)
+        return jp.logical_or(left_foot_coll, right_foot_coll)
     
-    def _reward_abstract_map(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
-        """Reward based on the abstract map cost at the robot's current position."""
-        pos = data.qpos[:2]  # x, y position of the base
-        cost = self.env.abstract_map.get_cost(pos, info["abstract_map"])
+    def _cost_linvel_rate(self, info: dict[str, Any]) -> jax.Array:
+        """Penalty for linear velocity changing too quickly."""
+        cost = jp.sum(jp.square(info["filtered_linvel"] - info["last_linvel"]))
         return cost
+    
+    def _cost_command_rate(self, info: dict[str, Any]) -> jax.Array:
+        """Penalty for command changing too quickly."""
+        cost = jp.sum(jp.square(info["command"] - info["last_command"]))
+        return cost
+    
+    def _cost_planner(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
+        """Reward for following the footstep plan."""
+        
+        # get plan slice of zmp positions and velocities
+        
+        # get current lip state
+        lip = jp.array([
+            data.subtree_com[self.env._torso_body_id],
+            info["com_vel"],
+            info["zmp_pos"]
+        ])
+        
+        com_trajectory = jp.zeros((self.env._config.planner_config.W, 3))
+        
+        def integration_step(com_trajectory: jp.ndarray):
+            """Integrate the unicycle model forward in time."""
+            # Get the next velocity command from the planner
+            
+            # Get next com position from lip equation
+            return com_trajectory
+        
+        jax.lax.scan(
+            integration_step, (com_trajectory), jp.arange(self.env._config.planner_config.W)
+        )
+        
+        # Cost is squared difference between integrated com trajectory and planned zmp trajectory
+        
+        return jp.array(0.0)
 
     # Base related rewards
     def _cost_lin_vel_z(self, local_linvel) -> jax.Array:
