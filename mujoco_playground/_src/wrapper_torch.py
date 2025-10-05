@@ -147,6 +147,9 @@ class RSLRLBraxWrapper(VecEnv):
 
     # todo -- specific to leap environment
     self.success_queue = deque(maxlen=100)
+    self.episode_success_queue = deque(maxlen=100)
+    self.episode_fall_queue = deque(maxlen=100)
+    self.episode_timeout_queue = deque(maxlen=100)
 
     print("JITing reset and step")
     self.reset_fn = jax.jit(self.env.reset)
@@ -201,6 +204,23 @@ class RSLRLBraxWrapper(VecEnv):
     for k, v in self.env_state.metrics.items():
       if k not in info_ret["log"]:
         info_ret["log"][k] = _jax_to_torch(v).float().mean().item()
+        
+    if done.any():
+      if "goal_reached" in self.env_state.metrics:
+        goal_reached_vec = _jax_to_torch(self.env_state.metrics["goal_reached"])
+        fallen_vec = _jax_to_torch(self.env_state.metrics["fallen"])
+        timeout_vec = _jax_to_torch(self.env_state.metrics["timeout"])
+        
+        for idx in torch.where(done)[0]:
+          self.episode_success_queue.append(goal_reached_vec[idx].item())
+          self.episode_fall_queue.append(fallen_vec[idx].item())
+          self.episode_timeout_queue.append(timeout_vec[idx].item())
+          
+      if len(self.episode_success_queue) > 0:
+          info_ret["log"]["rolling_success_rate"] = np.mean(self.episode_success_queue)
+          info_ret["log"]["rolling_fall_rate"] = np.mean(self.episode_fall_queue)
+          info_ret["log"]["rolling_timeout_rate"] = np.mean(self.episode_timeout_queue)
+
 
     return obs, reward, done, info_ret
 

@@ -3,7 +3,7 @@ import jax
 import pygame
 import os
 from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance.config import SceneConfig
-from jax.scipy.signal import convolve2d
+from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance.utils import ZMPTrajectory, FootstepPlan, COMTrajectory
 
 class Map:
     """Abstract discrete map class for obstacle avoidance tasks."""
@@ -36,30 +36,96 @@ class Map:
         ])
         self._map = self._compute_costs(self.goal, self.obstacles)
         self._gradient = self._compute_gradient(self._map)
+        self._policy = self._compute_greedy_policy(self._map)
         self._xml = self.generate_scene_xml(self.goal, self.obstacles)
         
         
     def get_command(self, pos: jp.ndarray, robot_yaw: float) -> jp.ndarray:
         """Get the unit vector command from the map gradient at a given world position."""
         
+        # 0) Choose command scaling based on distance to goal (HOTFIX)
+        goal = self.goal[:2]
+        goal_distance = jp.linalg.norm(pos - goal)
+        conditions = [
+            goal_distance < 0.25,
+            (goal_distance < 0.5) & (goal_distance >= 0.25),
+            (goal_distance < 0.75) & (goal_distance >= 0.5),
+            True  # Default case
+        ]
+        scale_values = [
+            jp.array([0.8, 0.8]),  
+            jp.array([0.85, 0.85]),  
+            jp.array([0.95, 0.95]),
+            jp.array([1.0, 1.0])   
+        ]
+        linear_scale, angular_scale = jp.select(conditions, scale_values)
+
         # 1) Global desired velocity given by gradient at current position
         map_pos = self.world_to_map(pos)
-        grad = self._gradient[map_pos[0], map_pos[1]]
+        dir = self._policy[map_pos[0], map_pos[1]]
         
         # 2) Desired LOCAL linear velocity (by rotating the world gradient)
         c, s = jp.cos(robot_yaw), jp.sin(robot_yaw)
         rot_matrix_transpose = jp.array([[c, s], [-s, c]])
-        desired_vel_local_xy = rot_matrix_transpose @ grad
-        desired_vel_local_xy = desired_vel_local_xy / (jp.linalg.norm(desired_vel_local_xy) * 2.0 + 1e-6)
+        desired_vel_local_xy = rot_matrix_transpose @ dir
+        desired_vel_local_xy = linear_scale * desired_vel_local_xy / (jp.linalg.norm(desired_vel_local_xy) * 2.0 + 1e-6)
         
         # 3) Desired LOCAL angular velocity (proportional to angle difference)
-        desired_yaw = jp.arctan2(grad[1], grad[0])
+        desired_yaw = jp.arctan2(dir[1], dir[0])
         yaw_error = desired_yaw - robot_yaw
         yaw_error = jp.arctan2(jp.sin(yaw_error), jp.cos(yaw_error))
-        kp_turn = 2.5 # Proportional gain for turning
-        desired_vel_local_w = kp_turn * yaw_error
+        desired_vel_local_w = angular_scale * yaw_error
         
         return jp.array([desired_vel_local_xy[0], desired_vel_local_xy[1], desired_vel_local_w])
+    
+    def _compute_greedy_policy(self, map: jp.ndarray) -> jp.ndarray:
+        policy = jp.full((self.bins, self.bins, 2), -1, dtype=jp.float32)
+        # Freeze obstacle and goal cells to a neutral direction (0,0)
+        policy = jp.where((map == self.OBSTACLE)[..., jp.newaxis], jp.array([0, 0], dtype=jp.float32), policy)
+        policy = jp.where((map == self.GOAL)[..., jp.newaxis], jp.array([0, 0], dtype=jp.float32), policy)
+
+        max_cost = jp.max(map, where=(map != self.OBSTACLE) & (map != self.FREE), initial=0)
+        max_cost_cell = jp.array([-1, -1])
+        
+        def compute_best_direction(policy: jp.ndarray, flat_idx: int) -> tuple[jp.ndarray, None]:
+            cell = jp.array([flat_idx // self.bins, flat_idx % self.bins])
+            minimum_cost = max_cost
+            minimum_cost_cell = max_cost_cell
+            
+            for dir in self.directions:
+                neighbor = cell + dir
+                
+                def evaluate_neighbor(operand: tuple[float, jp.ndarray]) -> tuple[float, jp.ndarray]:
+                    minimum_cost, minimum_cost_cell = operand
+                    return jax.lax.cond(
+                        map[neighbor[0], neighbor[1]] <= minimum_cost,
+                        lambda: (map[neighbor[0], neighbor[1]], neighbor),
+                        lambda: (minimum_cost, minimum_cost_cell)
+                    )
+                    
+                def no_op(operand: tuple[float, jp.ndarray]) -> tuple[float, jp.ndarray]:
+                    minimum_cost, minimum_cost_cell = operand
+                    return minimum_cost, minimum_cost_cell
+                    
+                minimum_cost, minimum_cost_cell = jax.lax.cond(
+                    self.is_in_bounds(neighbor),
+                    evaluate_neighbor,
+                    no_op,
+                    (minimum_cost, minimum_cost_cell)
+                )
+        
+            direction = minimum_cost_cell - cell
+            policy = policy.at[cell[0], cell[1]].set(direction)
+            
+            return policy, None
+            
+        policy, _ = jax.lax.scan(
+            compute_best_direction,
+            policy,
+            jp.arange(self.bins * self.bins)
+        )
+        
+        return policy
         
     def world_to_map(self, pos: jp.ndarray) -> jp.ndarray:
         """
@@ -123,7 +189,7 @@ class Map:
         """Get the value of a world position with respect to the map."""
         map_pos = self.world_to_map(pos)
         cost = map[map_pos[0], map_pos[1]]
-        value = jp.pow(self.abs_gamma, cost) - 1.0
+        value = jp.pow(self.abs_gamma, cost)
         return value
     
     def _dijkstra(self, map: jp.ndarray) -> jp.ndarray:
@@ -222,10 +288,11 @@ class Map:
         
         return grad_final
 
-    def plot_map_with_plan(
+    def plot_map(
         self, 
-        footstep_plan: 'FootstepPlan' = None,
-        zmp_trajectory: 'ZMPTrajectory' = None,
+        footstep_plan: FootstepPlan = None,
+        zmp_trajectory: ZMPTrajectory = None,
+        com_trajectory: COMTrajectory = None,
         filename="map_with_plan.png"
     ):
         """Plot the map with footsteps and ZMP trajectory overlaid."""
@@ -315,9 +382,6 @@ class Map:
             if len(points) > 1:
                 pygame.draw.lines(surface, (0, 150, 255), False, points, 4)
             
-            for px, py in points[::5]:
-                pygame.draw.circle(surface, (0, 100, 200), (px, py), 6)
-
         # Draw footsteps if provided
         if footstep_plan is not None:
             num_steps = footstep_plan.num_steps
@@ -332,16 +396,22 @@ class Map:
                 
                 # Draw start position (hollow)
                 px_start, py_start = world_to_pixel(start_pose)
-                pygame.draw.circle(surface, color, (px_start, py_start), 25, 4)
+                pygame.draw.circle(surface, color, (px_start, py_start), 10, 4)
                 
                 # Draw end position (filled)
                 px_end, py_end = world_to_pixel(end_pose)
-                pygame.draw.circle(surface, color, (px_end, py_end), 30)
+                pygame.draw.circle(surface, color, (px_end, py_end), 10)
                 
-                # Draw step number
-                text = font_small.render(str(i), True, (0, 0, 0))
-                text_rect = text.get_rect(center=(px_end, py_end))
-                surface.blit(text, text_rect)
+                
+        if com_trajectory is not None:
+            com_x = com_trajectory.x_positions
+            com_y = com_trajectory.y_positions
+            points = []
+            for i in range(len(com_x)):
+                px, py = world_to_pixel(jp.array([com_x[i], com_y[i]]))
+                points.append((px, py))
+            if len(points) > 1:
+                pygame.draw.lines(surface, (0, 0, 0), False, points, 4)
 
         pygame.image.save(surface, filename)
         pygame.quit()
@@ -385,92 +455,11 @@ class Map:
             lines.append("".join(line))
         return "\n".join(lines)
     
-    def plot_map(self, filename="map.png"):
-        """Plot the abstract map and save as PNG with colors, emojis, and high-contrast numbers."""
-        # Initialize Pygame if not already
-        if not pygame.get_init():
-            pygame.init()
-
-        # --- KEY CHANGE: Initialize two separate fonts ---
-        # Font for Emojis
-        font_emoji_path = None
-        for path in [
-            '/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf',
-            '/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf',
-        ]:
-            if os.path.exists(path):
-                font_emoji_path = path
-                break
-        font_emoji = pygame.font.Font(font_emoji_path, 5) if font_emoji_path else pygame.font.SysFont("Arial", 5)
-
-        # Font for Text/Numbers (use a standard system font)
-        font_text = pygame.font.SysFont("dejavusans", 24, bold=True)  # Smaller font for floats
-
-        # Flip the map for display consistency (0,0 at top-left)
-        disp_map = jp.flip(self._map, (0, 1))
-        
-        # Find max cost for heatmap normalization, ignoring special values
-        max_cost = jp.max(disp_map, where=(disp_map != self.OBSTACLE) & (disp_map != self.FREE), initial=0)
-        
-        height, width = disp_map.shape
-        cell_size = 110
-        screen_width = width * cell_size
-        screen_height = height * cell_size
-        surface = pygame.Surface((screen_width, screen_height))
-        surface.fill((255, 255, 255))
-
-        center_i, center_j = height // 2, width // 2
-
-        for i in range(height):
-            for j in range(width):
-                val = disp_map[i, j]
-                rect = pygame.Rect(j * cell_size, i * cell_size, cell_size, cell_size)
-                
-                # Determine background color
-                bg_color = (200, 200, 200) # Default to gray for unreachable cells
-                if val == self.OBSTACLE:
-                    bg_color = (50, 50, 50)  # Dark Gray for obstacle
-                elif val != self.FREE:
-                    normalized_cost = float(val) / max_cost if max_cost > 0 else 0
-                    r = int(255 * normalized_cost)
-                    g = int(255 * (1 - normalized_cost))
-                    b = 0
-                    bg_color = (r, g, b)
-                
-                pygame.draw.rect(surface, bg_color, rect)
-                pygame.draw.rect(surface, (128, 128, 128), rect, 1) # Grid lines
-
-                # --- KEY CHANGE: Select font and text based on cell content ---
-                is_emoji = False
-                text_str = ""
-                if val == self.GOAL:
-                    text_str, is_emoji = "🎯", True
-                elif val == self.OBSTACLE:
-                    text_str, is_emoji = "🧱", True
-                elif val != self.FREE:
-                    text_str = f"{val:.1f}"  # Float formatting
-
-                # Determine text color based on background brightness
-                # r, g, b = bg_color
-                # luminance = (0.299 * r + 0.587 * g + 0.114 * b)
-                # text_color = (255, 255, 255) if luminance < 128 else (0, 0, 0)
-                text_color = (50, 50, 50)
-
-                # Render and draw the text using the appropriate font
-                if text_str:
-                    font_to_use = font_emoji if is_emoji else font_text
-                    text_surface = font_to_use.render(text_str, True, text_color)
-                    text_rect = text_surface.get_rect(center=rect.center)
-                    surface.blit(text_surface, text_rect)
-        
-        pygame.image.save(surface, filename)
-        pygame.quit()
-        
     def print_gradient_map(self, thresh: float = 1e-3) -> None:
         """Print compact ASCII gradient arrows (flipped to human view)."""
         # Flip only the spatial axes — do NOT flip the vector-component axis.
         disp_map = jp.flip(self._map, (0, 1))
-        disp_grad = jp.flip(self._gradient, (0, 1))
+        disp_grad = jp.flip(self._policy, (0, 1))
 
         arrows = ["→", "↗", "↑", "↖", "←", "↙", "↓", "↘"]
         lines = []
@@ -594,19 +583,8 @@ class Map:
   
 if __name__ == "__main__":
     map = Map()
-    
     disp_map = jp.flip(map._map, (0, 1))
     disp_grad = jp.flip(map._gradient, (0, 1, 2))
-    # disp_grad = map._gradient  # shape (H, W, 2)
-    # for i in range(map.bins):
-    #     for j in range(map.bins):
-    #         print(f"Cell ({i}, {j}): Cost={disp_map[i, j]}, Gradient={disp_grad[i, j]}")
-    
-    print(map)
-    map.print_gradient_map()
-    command = map.get_command(jp.array([0.7, 0.0, 0.0]), 0.0)
-    print(f"Command at origin facing north: {command}")
     map.plot_map("test_map.png")
-    
-    # U-shaped obstacle
-    # obstacles = jp.array([
+    map.print_gradient_map()
+

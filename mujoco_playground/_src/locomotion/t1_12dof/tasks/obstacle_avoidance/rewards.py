@@ -10,6 +10,7 @@ from typing import Any, TYPE_CHECKING
 
 import jax
 import jax.numpy as jp
+from matplotlib.pyplot import axis
 from mujoco import mjx
 
 from mujoco_playground._src import gait
@@ -44,7 +45,7 @@ class ObstacleAvoidanceRewards:
         ang_f = info["filtered_angvel"]
 
         return {
-            # Tracking rewards.
+            # Abstract map rewards.
             "tracking_lin_vel_x": self._reward_tracking_lin_vel_axis(0, cmd, lin_f),
             "tracking_lin_vel_y": self._reward_tracking_lin_vel_axis(1, cmd, lin_f),
             "tracking_ang_vel": self._reward_tracking_ang_vel(cmd, ang_f),
@@ -53,8 +54,12 @@ class ObstacleAvoidanceRewards:
             "cost_collision": self._cost_collision(data),
             "cost_linvel_rate": self._cost_linvel_rate(info),
             "goal_distance": self._cost_to_goal_distance(info),
-            # "cost_command_rate": self._cost_command_rate(info),
-            # "cost_planner": self._cost_planner(data, info),
+            
+            # Footstep planner rewards
+            "planner_com_x": self._reward_planner_com_axis(data, info, 0),
+            "planner_com_y": self._reward_planner_com_axis(data, info, 1),
+            "feet_swing": self._reward_feet_swing(info["phase"], contact),
+            "feet_air_time": self._reward_feet_air_time(info["feet_air_time"], first_contact, info["command"]),
 
             # Base-related rewards.
             "lin_vel_z": self._cost_lin_vel_z(lin_f),
@@ -65,20 +70,14 @@ class ObstacleAvoidanceRewards:
             # Energy related rewards
             "torque_tiredness": self._cost_torque_tiredness(data.actuator_force),
             "torques": self._cost_torques(data.actuator_force),
-            "action_rate": self._cost_action_rate(
-                action, info["last_act"], info["last_last_act"]
-            ),
+            "action_rate": self._cost_action_rate(action, info["last_act"], info["last_last_act"]),
             "power": self._cost_energy(data.qvel[6:], data.actuator_force),
             "dof_acc": self._cost_dof_acc(data.qacc[6:]),
             "dof_vel": self._cost_dof_vel(data.qvel[6:]),
             
             # Feet related rewards.
             "feet_slip": self._cost_feet_slip(data, contact, info),
-            "feet_air_time": self._reward_feet_air_time(
-                info["feet_air_time"], first_contact, info["command"]
-            ),
             "feet_distance": self._cost_feet_distance(data, info),
-            "feet_swing": self._reward_feet_swing(info["phase"], contact),
             "feet_roll": self._cost_feet_roll(data),
             "feet_yaw_diff": self._cost_feet_yaw_diff(data),
             "feet_yaw_mean": self._cost_feet_yaw_mean(data),
@@ -156,34 +155,51 @@ class ObstacleAvoidanceRewards:
         cost = jp.sum(jp.square(info["command"] - info["last_command"]))
         return cost
     
-    def _cost_planner(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
-        """Reward for following the footstep plan."""
+    def _reward_planner_com_axis(self, data: mjx.Data, info: dict[str, Any], axis: int) -> jax.Array:
+        """Reward for following the COM trajectory from the footstep planner"""
         
-        # get plan slice of zmp positions and velocities
+        # ================================================================
+        # STEP 1: EXTRACT DATA
+        # ================================================================
+        timestep_idx = info["step"]
         
-        # get current lip state
-        lip = jp.array([
-            data.subtree_com[self.env._torso_body_id],
-            info["com_vel"],
-            info["zmp_pos"]
-        ])
-        
-        com_trajectory = jp.zeros((self.env._config.planner_config.W, 3))
-        
-        def integration_step(com_trajectory: jp.ndarray):
-            """Integrate the unicycle model forward in time."""
-            # Get the next velocity command from the planner
-            
-            # Get next com position from lip equation
-            return com_trajectory
-        
-        jax.lax.scan(
-            integration_step, (com_trajectory), jp.arange(self.env._config.planner_config.W)
+        ref_com = jax.lax.cond(
+            axis == 0,
+            lambda: info["ref_com_x"][timestep_idx],
+            lambda: info["ref_com_y"][timestep_idx],
         )
         
-        # Cost is squared difference between integrated com trajectory and planned zmp trajectory
+        # Current COM
+        current_com = data.subtree_com[self.env._torso_body_id][axis]
         
-        return jp.array(0.0)
+        # ================================================================
+        # STEP 2: COMPUTE ERROR
+        # ================================================================
+        err = jp.square(current_com - ref_com)
+        reward = jp.exp(-err / self.config.tracking_sigma)  
+        
+        # ================================================================
+        # STEP 3: DEBUG PRINTS (Print every N steps to avoid spam)
+        # ================================================================
+        # axis_label = 'x' if axis == 0 else 'y'
+        # jax.debug.print(
+        #     "=== PLANNER COST DEBUG (step {step}) ===\n"
+        #     "  Axis: {axis_label}\n"
+        #     "  Actual COM[{axis_label}]: {c:.4f}\n"
+        #     "  Reference COM[{axis_label}]: {r:.4f}\n"
+        #     "  Delta: {d:.4f}\n"
+        #     "  Squared err: {sq:.6f}\n"
+        #     "  Reward: {reward:.6f}",
+        #     step=timestep_idx,
+        #     axis_label=axis_label,
+        #     c=current_com,
+        #     r=ref_com,
+        #     d=current_com - ref_com,
+        #     sq=err,
+        #     reward=reward,
+        # )
+        
+        return reward
 
     # Base related rewards
     def _cost_lin_vel_z(self, local_linvel) -> jax.Array:
