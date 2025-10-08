@@ -56,10 +56,10 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         xml_path = consts.task_to_xml(task).as_posix()
         
         # Map and scene setup
-        self.scene_cfg = SceneConfig()
+        self.scene_cfg = SceneConfig(scenario=config.scene_config.scenario)
+        self.map = Map(self.scene_cfg)
         goal = self.scene_cfg.goal_position
-        self.goal = jp.array(goal[:2]) 
-        self.map = Map()
+        self.goal = jp.array(goal[:2])
         
         super().__init__(
             xml_path=xml_path,
@@ -67,7 +67,7 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
             config=config,
             config_overrides=config_overrides,
         )
-        
+
         self._post_init()
         self.lip = LipDynamics(N=75, dt=self._config.ctrl_dt, zc=self._config.reward_config.base_height_target)
         self.rewards = ObstacleAvoidanceRewards(self)
@@ -148,9 +148,9 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         qvel = jp.zeros(self.mjx_model.nv)
         data = mjx_env.init(self.mjx_model, qpos=qpos, qvel=qvel, ctrl=qpos[7:])
 
-        # Phase, freq=U(1.25, 1.75)
+        # Phase, freq=U(1.25, 1.35)
         rng, key = jax.random.split(rng)
-        gait_freq = jax.random.uniform(key, (), minval=1.25, maxval=1.75)
+        gait_freq = jax.random.uniform(key, (), minval=1.3, maxval=1.5)
         phase_dt = 2 * jp.pi * self.dt * gait_freq
         phase = jp.array([0, jp.pi])
 
@@ -176,20 +176,16 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         right_foot_pose = jp.concatenate([right_foot_xy, jp.array([0.0])]) # (3,)
         
         # --------- Plan
-        self.planner.config.step_frequency = gait_freq
         fs_plan = self.planner.plan(
             left_foot_pose=left_foot_pose,    # Starting position
             right_foot_pose=right_foot_pose,  # Starting position
+            step_frequency=2 * gait_freq,     # Steps per second
             start_time=0.0                    # Plan starts at t=0
         )
         zmp_traj = self.planner.compute_zmp_trajectory(fs_plan)
         current_com_pos = data.subtree_com[self._torso_body_id][:2]
         current_com_vel = data.subtree_linvel[self._torso_body_id][:2]
         current_com_acc = jp.array([0.0, 0.0])
-        
-        # jax.debug.print("COM Start Pos: {}", current_com_pos)
-        # jax.debug.print("COM Start Vel: {}", current_com_vel)
-        
         com_traj = preview_control(self.lip, zmp_traj, current_com_pos, current_com_vel, current_com_acc)
 
         info = {
@@ -203,12 +199,15 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
             "previous_com": data.subtree_com[self._torso_body_id],
             # Footstep plan
             "plan_timestep": jp.array(0, dtype=jp.int32),
+            "plan_time": 0.0,
             "swing_foot_ids": fs_plan.swing_foot_ids,
             "start_poses": fs_plan.start_poses,
             "end_poses": fs_plan.end_poses,
             "support_poses": fs_plan.support_poses,
             "start_times": fs_plan.start_times,
+            "ds_start_times": fs_plan.ds_start_times,
             "end_times": fs_plan.end_times,
+            "num_steps": fs_plan.num_steps,
             # COM Reference
             "ref_com_x": com_traj.x_positions,
             "ref_com_y": com_traj.y_positions,
@@ -321,12 +320,7 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         state.info["last_command"] = state.info["command"]
         state.info["command"] = self.map.get_command(data.qpos[:2], robot_yaw)
         
-        # Increment timestep (we advance by 1 each step)
-        state.info["plan_timestep"] = jp.minimum(
-            state.info["plan_timestep"] + 1,  # Try to increment
-            self._config.episode_length       # But don't exceed maximum
-        )
-
+        # Get observation, reward and metrics
         obs = self._get_obs(data, state.info, contact)
         done, fallen, goal_reached, max_steps_reached = self._get_termination(data, state.info)
         state.metrics["success"] = goal_reached.astype(jp.float32)
@@ -334,7 +328,6 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         state.metrics["max_steps_reached"] = max_steps_reached.astype(jp.float32)
         state.metrics["timeout"] = (max_steps_reached & ~goal_reached & ~fallen).astype(jp.float32)
         state.metrics["goal_reached"] = goal_reached.astype(jp.float32)
-        
         rewards = self.rewards.get(
             data, action, state.info, state.metrics, done, first_contact, contact
         )
@@ -350,8 +343,11 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
 
         reward = jp.clip(sum(rewards.values()) * self.dt, -1000.0, 10000.0)
 
+        # Increment counters and update state
         state.info["push"] = push
         state.info["step"] += 1
+        state.info["plan_time"] += self.dt
+        state.info["plan_timestep"] += 1
         state.info["global_step"] += 1
         state.info["push_step"] += 1
         phase_tp1 = state.info["phase"] + state.info["phase_dt"]
@@ -370,9 +366,14 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
             state.info["step"],
         )
         state.info["plan_timestep"] = jp.where(
-            done,                              # Condition: is episode done? TODO: reset if replanning needed
-            jp.array(0, dtype=jp.int32),       # If yes: reset to 0
-            state.info["plan_timestep"]        # If no: keep current value
+            done,                             
+            jp.array(0, dtype=jp.int32),       
+            state.info["plan_timestep"]   
+        )
+        state.info["plan_time"] = jp.where(
+            done,
+            0.0,
+            state.info["plan_time"],
         )
         
         state.info["feet_air_time"] *= ~contact
@@ -388,7 +389,7 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
 
     def _get_termination(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
         fall_termination = self.get_gravity(data)[-1] < 0.0
-        goal_termination = jp.linalg.norm(info["rel_goal"]) < 0.3
+        goal_termination = jp.linalg.norm(info["rel_goal"]) < 0.4
         steps_termination = info["step"] >= self._config.episode_length
         return (
             fall_termination | jp.isnan(data.qpos).any() | jp.isnan(data.qvel).any() | goal_termination | steps_termination, 
@@ -496,31 +497,26 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         }
         
     def _get_curriculum_weights(self, info: Dict[str, Any]):
-        def set_weights_near_goal(_):
-            return {
-                "tracking_lin_vel_x": self._config.reward_config.scales["tracking_lin_vel_x"] * 0.9,
-                "tracking_lin_vel_y": self._config.reward_config.scales["tracking_lin_vel_y"] * 0.9,
-                "tracking_ang_vel": self._config.reward_config.scales["tracking_ang_vel"] * 0.9,
-                "goal_distance": 3.0,
-            }
-
-        def default_weights(_):
-            return {
-                "tracking_lin_vel_x": self._config.reward_config.scales["tracking_lin_vel_x"],
-                "tracking_lin_vel_y": self._config.reward_config.scales["tracking_lin_vel_y"],
-                "tracking_ang_vel": self._config.reward_config.scales["tracking_ang_vel"],
-                "goal_distance": self._config.reward_config.scales["goal_distance"],
-            }
-
-        # If we are near the goal, reduce speed tracking reward and rely on position reward
-        dist_to_goal = jp.linalg.norm(info["rel_goal"])
-        return jax.lax.cond(
-            dist_to_goal < 0.5,
-            set_weights_near_goal,
-            default_weights,
-            operand=None
+        alpha = jp.clip(
+            info["global_step"] / self._config.reward_config.curriculum["ramp_steps"], 0.0, 1.0
         )
         
+        # Weights departing from normal config and ending in curriculum config
+        tracking_lin_vel_x = self._config.reward_config.scales["tracking_lin_vel_x"] + alpha * (
+            self._config.reward_config.curriculum["tracking_lin_vel_x"] - self._config.reward_config.scales["tracking_lin_vel_x"]
+        )
+        tracking_lin_vel_y = self._config.reward_config.scales["tracking_lin_vel_y"] + alpha * (
+            self._config.reward_config.curriculum["tracking_lin_vel_y"] - self._config.reward_config.scales["tracking_lin_vel_y"]
+        )
+        tracking_ang_vel = self._config.reward_config.scales["tracking_ang_vel"] + alpha * (
+            self._config.reward_config.curriculum["tracking_ang_vel"] - self._config.reward_config.scales["tracking_ang_vel"]
+        )
+        
+        return {
+            "tracking_lin_vel_x": tracking_lin_vel_x,
+            "tracking_lin_vel_y": tracking_lin_vel_y,
+            "tracking_ang_vel": tracking_ang_vel,
+        }
     
     # ----- feet kinematics ----------------------------------------------------
     def _feet_site_xmat(self, data: mjx.Data) -> jax.Array:

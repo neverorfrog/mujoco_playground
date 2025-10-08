@@ -395,7 +395,7 @@ def plot_control_results(
     # X direction
     plt.subplot(3, 1, 1)
     plt.plot(zmp_x_ref_np, 'g--', linewidth=2, label='ZMP_x_ref')
-    plt.plot(zmp_x_actual_np, 'b', linewidth=1.5, label='ZMP_x')
+    # plt.plot(zmp_x_actual_np, 'b', linewidth=1.5, label='ZMP_x')
     plt.plot(com_x_np, 'r--', linewidth=1.5, label='COM_x')
     plt.ylabel('X Position [m]')
     plt.legend()
@@ -404,7 +404,7 @@ def plot_control_results(
     # Y direction
     plt.subplot(3, 1, 2)
     plt.plot(zmp_y_ref_np, 'g--', linewidth=2, label='ZMP_y_ref')
-    plt.plot(zmp_y_actual_np, 'b', linewidth=1.5, label='ZMP_y')
+    # plt.plot(zmp_y_actual_np, 'b', linewidth=1.5, label='ZMP_y')
     plt.plot(com_y_np, 'r--', linewidth=1.5, label='COM_y')
     plt.ylabel('Y Position [m]')
     plt.legend()
@@ -413,7 +413,7 @@ def plot_control_results(
     # 2D trajectory
     plt.subplot(3, 1, 3)
     plt.plot(zmp_x_ref_np, zmp_y_ref_np, 'g--', linewidth=2, label='ZMP_ref')
-    plt.plot(zmp_x_actual_np, zmp_y_actual_np, 'b', linewidth=1.5, label='ZMP')
+    # plt.plot(zmp_x_actual_np, zmp_y_actual_np, 'b', linewidth=1.5, label='ZMP')
     plt.plot(com_x_np, com_y_np, 'r--', linewidth=1.5, label='COM')
     plt.xlabel('X Position [m]')
     plt.ylabel('Y Position [m]')

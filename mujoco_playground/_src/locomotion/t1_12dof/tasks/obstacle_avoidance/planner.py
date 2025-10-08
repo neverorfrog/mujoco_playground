@@ -24,6 +24,7 @@ class PlannerState:
     start_times: jp.ndarray
     ds_start_times: jp.ndarray
     end_times: jp.ndarray
+    step_duration: float
     num_steps: int = 0
 
     def tree_flatten(self):
@@ -32,7 +33,7 @@ class PlannerState:
             self.swing_foot, self.step_index, self.time_since_last_step,
             self.swing_foot_ids, self.start_poses, self.end_poses, self.support_poses,
             self.start_times, self.ds_start_times, self.end_times,
-            self.num_steps,
+            self.step_duration, self.num_steps
         )
         return children, None
 
@@ -51,6 +52,7 @@ class FootstepPlanner:
         self,
         left_foot_pose: jp.ndarray,
         right_foot_pose: jp.ndarray,
+        step_frequency: float,
         start_time: float = 0.0,
     ) -> FootstepPlan:
         """
@@ -60,7 +62,7 @@ class FootstepPlanner:
         """
         
         cfg = self.config
-        eps = 1e-4
+        eps = 1e-6
         
         # --- INITIALIZATION ---
         # Virtual pelvis state
@@ -75,7 +77,6 @@ class FootstepPlanner:
         step_index = 0
         time_since_last_step = 0.0
         swing_foot = cfg.first_swing
-        step_duration = 1.0 / cfg.step_frequency
         
         # --- PREALLOCATE ARRAYS ---
         swing_foot_ids = jp.zeros(cfg.max_steps, dtype=jp.int32)
@@ -86,28 +87,6 @@ class FootstepPlanner:
         ds_start_times = jp.full(cfg.max_steps, -1.0)
         end_times = jp.full(cfg.max_steps, -1.0)
         
-        # --- THE MAIN LOOP OVER TIMESTEPS ---
-        # The state tuple carried through the loop
-        # Build single planner state (pytree)
-        init_state = PlannerState(
-            pelvis_pos=pelvis_pos,
-            pelvis_theta=pelvis_theta,
-            L=L,
-            R=R,
-            previous_fs_end_time=0.0,
-            swing_foot=swing_foot,
-            step_index=step_index,
-            time_since_last_step=time_since_last_step,
-            swing_foot_ids=swing_foot_ids,
-            start_poses=start_poses,
-            end_poses=end_poses,
-            support_poses=support_poses,
-            start_times=start_times,
-            ds_start_times=ds_start_times,
-            end_times=end_times,
-            num_steps=0,
-        )
-        
         def timestep_iteration(i, state: PlannerState):
             
             t = start_time + (i+1) * cfg.dt
@@ -117,8 +96,7 @@ class FootstepPlanner:
             
             def integrate_pelvis(state: PlannerState) -> PlannerState:
                 # Integrate virtual pelvis state with velocity command
-                # command = self.map.get_command(state.pelvis_pos, state.pelvis_theta)
-                command = jp.array([0.5, 0.0, 0.0])  # Default command if no map
+                command = self.map.get_command(state.pelvis_pos, state.pelvis_theta)
                 
                 # Scale command to reasonable walking speeds
                 linear_scale = 0.5
@@ -140,8 +118,8 @@ class FootstepPlanner:
                 is_first_step = (s.step_index == 0)
                 
                 # Step timing
-                ss_duration = jp.where(is_first_step, 0.0, cfg.swing_percentage * step_duration)
-                ds_duration = jp.where(is_first_step, cfg.warmup_ds_factor * step_duration, (1.0 - cfg.swing_percentage) * step_duration)
+                ss_duration = jp.where(is_first_step, 0.0, cfg.swing_percentage * s.step_duration)
+                ds_duration = jp.where(is_first_step, s.step_duration, (1.0 - cfg.swing_percentage) * s.step_duration)
                 fs_start = t - time_since_last_step_new
                 ss_start = fs_start
                 ds_start = fs_start + ss_duration
@@ -210,6 +188,7 @@ class FootstepPlanner:
                     start_times=start_times_new,
                     ds_start_times=ds_start_times_new,
                     end_times=end_times_new,
+                    step_duration=1.0 / step_frequency,
                     num_steps=current_state.num_steps + 1,
                 )
                 
@@ -227,7 +206,7 @@ class FootstepPlanner:
                 operand=state
             )
                 
-            should_place = (time_since_last_step_new >= step_duration - eps) & (state.step_index < cfg.max_steps)
+            should_place = (time_since_last_step_new >= state.step_duration - eps) & (state.step_index < cfg.max_steps)
             new_footstep_event: PlannerState = jax.lax.cond(
                 should_place,
                 place_new_footstep,
@@ -251,10 +230,33 @@ class FootstepPlanner:
                 start_times=new_footstep_event.start_times,
                 ds_start_times=new_footstep_event.ds_start_times,
                 end_times=new_footstep_event.end_times,
+                step_duration=new_footstep_event.step_duration,
                 num_steps=new_footstep_event.num_steps,
             )
             
         
+        # --- THE MAIN LOOP OVER TIMESTEPS ---
+        # The state tuple carried through the loop
+        # Build single planner state (pytree)
+        init_state = PlannerState(
+            pelvis_pos=pelvis_pos,
+            pelvis_theta=pelvis_theta,
+            L=L,
+            R=R,
+            previous_fs_end_time=0.0,
+            swing_foot=swing_foot,
+            step_index=step_index,
+            time_since_last_step=time_since_last_step,
+            swing_foot_ids=swing_foot_ids,
+            start_poses=start_poses,
+            end_poses=end_poses,
+            support_poses=support_poses,
+            start_times=start_times,
+            ds_start_times=ds_start_times,
+            end_times=end_times,
+            step_duration=cfg.warmup_ds_factor * (1.0 / step_frequency),
+            num_steps=0,
+        )
 
         final_state: PlannerState = jax.lax.fori_loop(
             0, cfg.P, timestep_iteration, init_state
@@ -286,24 +288,43 @@ class FootstepPlanner:
         """
         return jp.arctan2(jp.sin(angle), jp.cos(angle))
     
-    def get_step_index(self, t: float) -> int:
+    def get_step_index(
+        self,
+        current_time: float,
+        start_times: jp.ndarray,
+        num_steps: int
+    ) -> int:
         """
-        Get the current step index at time t.
-        Returns -1 if before the first step, or num_steps if after the last step.
-        """
-        if not hasattr(self, 'footstep_plan'):
-            raise ValueError("Footstep plan not computed yet. Call plan() first.")
+        Get the current footstep index based on the current time.
         
-        # Find active step with boolean masking
-        start_times = self.footstep_plan.start_times[:self.footstep_plan.num_steps]
-        end_times = self.footstep_plan.end_times[:self.footstep_plan.num_steps]
-        is_active = (start_times <= t) & (t < end_times)
-        step_index = jp.where(
-            jp.any(is_active),
-            jp.argmax(is_active),  # First True index
-            -1                     # Not found
+        Args:
+            current_time: Current simulation time
+            start_times: Array of footstep start times
+            num_steps: Number of valid steps in the plan
+            
+        Returns:
+            Index of the current footstep
+        """
+        # Create a mask for valid steps
+        step_indices = jp.arange(start_times.shape[0])
+        valid_mask = step_indices < num_steps
+        
+        # Mask out invalid times with a large value so they won't be selected
+        masked_start_times = jp.where(
+            valid_mask,
+            start_times,
+            jp.full_like(start_times, jp.inf)
         )
-        return step_index
+        
+        # Find which step we're in (current_time >= start_time)
+        in_step = current_time >= masked_start_times
+        
+        # Get the last valid index where condition is True
+        # If no step satisfies the condition, default to 0
+        footstep_idx = jp.sum(in_step.astype(jp.int32)) - 1
+        footstep_idx = jp.clip(footstep_idx, 0, num_steps - 1)
+        
+        return footstep_idx
     
         
     def compute_zmp_trajectory(self, footstep_plan: FootstepPlan) -> ZMPTrajectory:
@@ -400,7 +421,7 @@ def main():
     
     print(fs_plan.start_times)
     
-    for step_index in range(fs_plan.num_steps):
+    for step_index in range(5):
         print(f"Step {step_index}: Support foot: ", "L" if fs_plan.swing_foot_ids[step_index] == Foot.RIGHT else "R")
         print("  Start pose: ", fs_plan.start_poses[step_index])
         print("  End pose: ", fs_plan.end_poses[step_index])
@@ -408,7 +429,10 @@ def main():
         print("  Start time: ", fs_plan.start_times[step_index])
         print("  DS start time: ", fs_plan.ds_start_times[step_index])
         print("  End time: ", fs_plan.end_times[step_index])
-    
+        
+    # step_index = planner.get_step_index(2.0)
+    # print(f"At time 0.8s, current step index is {step_index}")
+
     zmp_traj = planner.compute_zmp_trajectory(fs_plan)
     lip = LipDynamics(N=100, dt=planner.config.dt, zc=0.68) 
     
@@ -427,7 +451,7 @@ def main():
         initial_com_acc
     )
     
-    plot_control_results(lip, zmp_traj, com_traj)
+    # plot_control_results(lip, zmp_traj, com_traj)
     map.plot_map(fs_plan, zmp_traj, com_traj)
 
 

@@ -10,8 +10,10 @@ class Map:
     
     _map: jp.ndarray
     
-    def __init__(self):
-        self.scene_config = SceneConfig()
+    def __init__(self, scene_config: SceneConfig = None):
+        if scene_config is None:
+            scene_config = SceneConfig()
+        self.scene_config = scene_config
         self.bins = self.scene_config.bins
         self.bin_size = self.scene_config.bin_size
         self.goal = self.scene_config.goal_position
@@ -293,7 +295,7 @@ class Map:
         footstep_plan: FootstepPlan = None,
         zmp_trajectory: ZMPTrajectory = None,
         com_trajectory: COMTrajectory = None,
-        filename="map_with_plan.png"
+        filename="map.png"
     ):
         """Plot the map with footsteps and ZMP trajectory overlaid."""
         if not pygame.get_init():
@@ -546,7 +548,7 @@ class Map:
         obstacle_xml = ""
         obstacle_index = 0
         for obstacle in self.obstacles:
-            obstacle_xml += f"""        <geom name="obstacle_{obstacle_index}" type="cylinder" size="{self.bin_size / 2.2} {self.bin_size / 2.2}" pos="{obstacle[0]} {obstacle[1]} 0.1" material="obstacle_mat"
+            obstacle_xml += f"""        <geom name="obstacle_{obstacle_index}" type="cylinder" size="{self.bin_size / 2.5} {self.bin_size / 2.5}" pos="{obstacle[0]} {obstacle[1]} 0.1" material="obstacle_mat"
                     contype="1" conaffinity="2" friction="0.9 0.1 0.01"/>\n"""
             obstacle_index += 1
  
@@ -585,6 +587,6 @@ if __name__ == "__main__":
     map = Map()
     disp_map = jp.flip(map._map, (0, 1))
     disp_grad = jp.flip(map._gradient, (0, 1, 2))
-    map.plot_map("test_map.png")
+    map.plot_map()
     map.print_gradient_map()
 

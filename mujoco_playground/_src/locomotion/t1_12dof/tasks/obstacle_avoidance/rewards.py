@@ -15,7 +15,7 @@ from mujoco import mjx
 
 from mujoco_playground._src import gait
 from mujoco_playground._src.collision import geoms_colliding
-from .config import RewardConfig
+from .config import RewardConfig, Foot
 
 if TYPE_CHECKING:  # pragma: no cover
     from .env import ObstacleAvoidance
@@ -26,7 +26,6 @@ class ObstacleAvoidanceRewards:
     def __init__(self, env: 'ObstacleAvoidance'):
         self.env = env
         self.config = RewardConfig()
-        # self.planner = FootstepPlanner()
         
     def get(
         self,
@@ -60,6 +59,7 @@ class ObstacleAvoidanceRewards:
             "planner_com_y": self._reward_planner_com_axis(data, info, 1),
             "feet_swing": self._reward_feet_swing(info["phase"], contact),
             "feet_air_time": self._reward_feet_air_time(info["feet_air_time"], first_contact, info["command"]),
+            "feet_positions": self._reward_feet_positions(data, info, contact),
 
             # Base-related rewards.
             "lin_vel_z": self._cost_lin_vel_z(lin_f),
@@ -157,48 +157,14 @@ class ObstacleAvoidanceRewards:
     
     def _reward_planner_com_axis(self, data: mjx.Data, info: dict[str, Any], axis: int) -> jax.Array:
         """Reward for following the COM trajectory from the footstep planner"""
-        
-        # ================================================================
-        # STEP 1: EXTRACT DATA
-        # ================================================================
-        timestep_idx = info["step"]
-        
         ref_com = jax.lax.cond(
             axis == 0,
-            lambda: info["ref_com_x"][timestep_idx],
-            lambda: info["ref_com_y"][timestep_idx],
+            lambda: info["ref_com_x"][info["plan_timestep"]],
+            lambda: info["ref_com_y"][info["plan_timestep"]],
         )
-        
-        # Current COM
         current_com = data.subtree_com[self.env._torso_body_id][axis]
-        
-        # ================================================================
-        # STEP 2: COMPUTE ERROR
-        # ================================================================
         err = jp.square(current_com - ref_com)
-        reward = jp.exp(-err / self.config.tracking_sigma)  
-        
-        # ================================================================
-        # STEP 3: DEBUG PRINTS (Print every N steps to avoid spam)
-        # ================================================================
-        # axis_label = 'x' if axis == 0 else 'y'
-        # jax.debug.print(
-        #     "=== PLANNER COST DEBUG (step {step}) ===\n"
-        #     "  Axis: {axis_label}\n"
-        #     "  Actual COM[{axis_label}]: {c:.4f}\n"
-        #     "  Reference COM[{axis_label}]: {r:.4f}\n"
-        #     "  Delta: {d:.4f}\n"
-        #     "  Squared err: {sq:.6f}\n"
-        #     "  Reward: {reward:.6f}",
-        #     step=timestep_idx,
-        #     axis_label=axis_label,
-        #     c=current_com,
-        #     r=ref_com,
-        #     d=current_com - ref_com,
-        #     sq=err,
-        #     reward=reward,
-        # )
-        
+        reward = jp.exp(-err)  
         return reward
 
     # Base related rewards
@@ -301,6 +267,36 @@ class ObstacleAvoidanceRewards:
 
         # Reward when the corresponding foot is **not** in contact
         return (left_swing & ~feet_contact[0]) + (right_swing & ~feet_contact[1])
+    
+    def _reward_feet_positions(
+        self, data: mjx.Data, info: dict[str, Any], contact: jp.ndarray
+    ):
+        """Reward feet for being near their planned positions when airborne."""
+    
+        # Get current step index from planner
+        footstep_idx = self.env.planner.get_step_index(
+            info["plan_time"], info["start_times"], info["num_steps"]
+        )
+        
+        # Get actual foot positions and contacts
+        left_pos = data.site_xpos[self.env._feet_site_id[0]][:2]
+        right_pos = data.site_xpos[self.env._feet_site_id[1]][:2]
+        left_is_airborne = ~contact[0]
+        right_is_airborne = ~contact[1]
+        
+        # Get target foot positions
+        swing_target = info["end_poses"][footstep_idx][:2]
+        
+        # Compute errors
+        left_error = jp.sum(jp.square(left_pos - swing_target))
+        right_error = jp.sum(jp.square(right_pos - swing_target))
+    
+        # The phase-based reward already handles "should this foot be swinging"
+        # This just guides "where should it go when it is swinging"
+        left_reward = left_is_airborne * jp.exp(-left_error / 0.5)
+        right_reward = right_is_airborne * jp.exp(-right_error / 0.5)
+    
+        return left_reward + right_reward
     
     def _cost_feet_roll(self, data: mjx.Data) -> jax.Array:
         """Penalty for feet roll angles (should be close to 0)."""

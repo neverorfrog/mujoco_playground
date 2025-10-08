@@ -429,8 +429,8 @@ class ObstacleAvoidance(t1_base.T1Env):
     obstacle_pattern = re.compile(r"obstacle_\d+")
     goal_pattern = re.compile(r"goal")
 
-    obstacle_positions = config.scene_config.obstacle_positions
-    goal_position = config.scene_config.goal_position
+    obstacle_positions = config.scene_config.obstacles
+    goal_position = config.scene_config.goal
 
     for geom in root.findall(".//geom"):
         if obstacle_pattern.match(geom.get("name", "")):
