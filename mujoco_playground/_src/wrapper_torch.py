@@ -150,6 +150,11 @@ class RSLRLBraxWrapper(VecEnv):
     self.episode_success_queue = deque(maxlen=100)
     self.episode_fall_queue = deque(maxlen=100)
     self.episode_timeout_queue = deque(maxlen=100)
+    self.last_torques = None
+    self.episode_power = deque(maxlen=100)
+    self.episode_cot = deque(maxlen=100)
+    self.episode_trunk_stability = deque(maxlen=100)
+    self.episode_smoothness = deque(maxlen=100)
 
     print("JITing reset and step")
     self.reset_fn = jax.jit(self.env.reset)

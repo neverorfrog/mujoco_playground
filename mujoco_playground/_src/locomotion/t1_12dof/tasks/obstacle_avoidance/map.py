@@ -2,6 +2,7 @@ import jax.numpy as jp
 import jax
 import pygame
 import os
+import math
 from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance.config import SceneConfig
 from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance.utils import ZMPTrajectory, FootstepPlan, COMTrajectory
 
@@ -28,7 +29,7 @@ class Map:
         self.GOAL = 0.0
         self.OBSTACLE = 1000.0  # Changed to large float instead of 2 * bins
         self.NEAR_OBSTACLE = 1.0  # Cost for cells adjacent to obstacles
-        self.NEAR_OBSTACLE_INFLATE = 1.0  # Inflation cost for cells adjacent to obstacles
+        self.NEAR_OBSTACLE_INFLATE = 2.0  # Inflation cost for cells adjacent to obstacles
         self.directions = jp.array([
             [1, 0], [-1, 0], [0, 1], [0, -1],  # Cardinal
             [1, 1], [1, -1], [-1, 1], [-1, -1] # Diagonal
@@ -295,9 +296,18 @@ class Map:
         footstep_plan: FootstepPlan = None,
         zmp_trajectory: ZMPTrajectory = None,
         com_trajectory: COMTrajectory = None,
-        filename="map.png"
+        filename="map.png",
+        show_velocity_field: bool = False
     ):
-        """Plot the map with footsteps and ZMP trajectory overlaid."""
+        """Plot the map with footsteps and ZMP trajectory overlaid.
+        
+        Args:
+            footstep_plan: Optional footstep plan to overlay
+            zmp_trajectory: Optional ZMP trajectory to overlay
+            com_trajectory: Optional COM trajectory to overlay
+            filename: Output filename for the plot
+            show_velocity_field: If True, display velocity arrows instead of cost numbers
+        """
         if not pygame.get_init():
             pygame.init()
 
@@ -316,6 +326,7 @@ class Map:
 
         # Flip map for display
         disp_map = jp.flip(self._map, (0, 1))
+        disp_policy = jp.flip(self._policy, (0, 1))
         max_cost = jp.max(disp_map, where=(disp_map != self.OBSTACLE) & (disp_map != self.FREE), initial=0)
         
         height, width = disp_map.shape
@@ -344,21 +355,76 @@ class Map:
                 pygame.draw.rect(surface, bg_color, rect)
                 pygame.draw.rect(surface, (128, 128, 128), rect, 1)
 
-                is_emoji = False
-                text_str = ""
-                if val == self.GOAL:
-                    text_str, is_emoji = "🎯", True
-                elif val == self.OBSTACLE:
-                    text_str, is_emoji = "🧱", True
-                elif val != self.FREE:
-                    text_str = f"{val:.1f}"
+                # Draw velocity field arrows or cost numbers
+                if show_velocity_field:
+                    # Get the policy vector for this cell (flipped coordinates)
+                    policy_vec = disp_policy[i, j]
+                    
+                    # Only draw arrows for free cells (not obstacles or goal)
+                    if val != self.OBSTACLE and val != self.GOAL and val != self.FREE:
+                        # Calculate arrow properties
+                        vec_x = -float(policy_vec[1])  # column direction (y in world)
+                        vec_y = -float(policy_vec[0])  # row direction (x in world, negated for display)
+                        magnitude = (vec_x**2 + vec_y**2)**0.5
+                        
+                        # Arrow parameters
+                        arrow_length = cell_size * 0.35
+                        arrow_head_size = 12
+                        
+                        # Normalize and scale
+                        vec_x = vec_x / magnitude * arrow_length
+                        vec_y = vec_y / magnitude * arrow_length
+                        
+                        # Start and end points
+                        center_x, center_y = rect.center
+                        end_x = center_x + vec_x
+                        end_y = center_y + vec_y
+                        
+                        # Draw arrow shaft
+                        pygame.draw.line(surface, (0, 0, 0), (center_x, center_y), (end_x, end_y), 3)
+                        
+                        # Draw arrowhead
+                        angle = float(jp.arctan2(vec_y, vec_x))
+                        angle1 = angle + 3.14159 * 0.75
+                        angle2 = angle - 3.14159 * 0.75
+                        
+                        head_point1 = (
+                            float(end_x + arrow_head_size * math.cos(angle1)),
+                            float(end_y + arrow_head_size * math.sin(angle1))
+                        )
+                        head_point2 = (
+                            float(end_x + arrow_head_size * math.cos(angle2)),
+                            float(end_y + arrow_head_size * math.sin(angle2))
+                        )
+                            
+                        pygame.draw.polygon(surface, (0, 0, 0), [(float(end_x), float(end_y)), head_point1, head_point2], int(math.floor(magnitude)))
+                    elif val == self.GOAL:
+                        # Still show goal emoji
+                        text_surface = font_emoji.render("🎯", True, (50, 50, 50))
+                        text_rect = text_surface.get_rect(center=rect.center)
+                        surface.blit(text_surface, text_rect)
+                    elif val == self.OBSTACLE:
+                        # Still show obstacle emoji
+                        text_surface = font_emoji.render("🧱", True, (50, 50, 50))
+                        text_rect = text_surface.get_rect(center=rect.center)
+                        surface.blit(text_surface, text_rect)
+                else:
+                    # Original behavior: show cost numbers
+                    is_emoji = False
+                    text_str = ""
+                    if val == self.GOAL:
+                        text_str, is_emoji = "🎯", True
+                    elif val == self.OBSTACLE:
+                        text_str, is_emoji = "🧱", True
+                    elif val != self.FREE and footstep_plan is None:
+                        text_str = f"{val:.1f}"
 
-                text_color = (50, 50, 50)
-                if text_str:
-                    font_to_use = font_emoji if is_emoji else font_text
-                    text_surface = font_to_use.render(text_str, True, text_color)
-                    text_rect = text_surface.get_rect(center=rect.center)
-                    surface.blit(text_surface, text_rect)
+                    text_color = (50, 50, 50)
+                    if text_str:
+                        font_to_use = font_emoji if is_emoji else font_text
+                        text_surface = font_to_use.render(text_str, True, text_color)
+                        text_rect = text_surface.get_rect(center=rect.center)
+                        surface.blit(text_surface, text_rect)
 
         def world_to_pixel(pos):
             """Convert world [x, y] to pixel [px, py]"""
@@ -587,6 +653,5 @@ if __name__ == "__main__":
     map = Map()
     disp_map = jp.flip(map._map, (0, 1))
     disp_grad = jp.flip(map._gradient, (0, 1, 2))
-    map.plot_map()
-    map.print_gradient_map()
+    map.plot_map(show_velocity_field=True)
 

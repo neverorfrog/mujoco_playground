@@ -48,18 +48,16 @@ class ObstacleAvoidanceRewards:
             "tracking_lin_vel_x": self._reward_tracking_lin_vel_axis(0, cmd, lin_f),
             "tracking_lin_vel_y": self._reward_tracking_lin_vel_axis(1, cmd, lin_f),
             "tracking_ang_vel": self._reward_tracking_ang_vel(cmd, ang_f),
-            "goal_orientation": self._reward_goal_orientation(data, info),
             "reward_map": self._reward_map(data, info),
             "cost_collision": self._cost_collision(data),
             "cost_linvel_rate": self._cost_linvel_rate(info),
             "goal_distance": self._cost_to_goal_distance(info),
+            "goal_proximity": self._reward_goal_proximity(info),
             
             # Footstep planner rewards
-            "planner_com_x": self._reward_planner_com_axis(data, info, 0),
-            "planner_com_y": self._reward_planner_com_axis(data, info, 1),
             "feet_swing": self._reward_feet_swing(info["phase"], contact),
             "feet_air_time": self._reward_feet_air_time(info["feet_air_time"], first_contact, info["command"]),
-            "feet_positions": self._reward_feet_positions(data, info, contact),
+            "torso_velocity_alignment": self._reward_torso_velocity_alignment(data, cmd),
 
             # Base-related rewards.
             "lin_vel_z": self._cost_lin_vel_z(lin_f),
@@ -114,21 +112,6 @@ class ObstacleAvoidanceRewards:
     def _cost_to_goal_distance(self, info: dict[str, Any]) -> jax.Array:
         """Tracks the goal distance to the goal"""
         return jp.sqrt(jp.square(info["rel_goal"][0]) + jp.square(info["rel_goal"][1]))
-    
-    def _reward_goal_orientation(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
-        """Penalty for yaw misalignment between base heading and the direction to the goal."""
-        torso_R = data.site_xmat[self.env._site_id]
-        robot_yaw = jp.arctan2(torso_R[1, 0], torso_R[0, 0])
-        
-        pos = data.qpos[:2]
-        map_pos = self.env.map.world_to_map(pos)
-        grad = info["gradient"][map_pos[0], map_pos[1]]
-        desired_yaw = jp.arctan2(grad[1], grad[0])
-        
-        # Wrap the yaw difference to [-π, π] for periodicity
-        yaw_diff = jp.fmod(robot_yaw - desired_yaw + jp.pi, 2 * jp.pi) - jp.pi
-        err = jp.square(yaw_diff)
-        return jp.exp(-err / self.config.tracking_sigma)
 
     def _reward_map(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
         """Reward based on the map cost at the robot's current position."""
@@ -155,17 +138,19 @@ class ObstacleAvoidanceRewards:
         cost = jp.sum(jp.square(info["command"] - info["last_command"]))
         return cost
     
-    def _reward_planner_com_axis(self, data: mjx.Data, info: dict[str, Any], axis: int) -> jax.Array:
-        """Reward for following the COM trajectory from the footstep planner"""
-        ref_com = jax.lax.cond(
-            axis == 0,
-            lambda: info["ref_com_x"][info["plan_timestep"]],
-            lambda: info["ref_com_y"][info["plan_timestep"]],
-        )
-        current_com = data.subtree_com[self.env._torso_body_id][axis]
-        err = jp.square(current_com - ref_com)
-        reward = jp.exp(-err)  
-        return reward
+    def _reward_goal_proximity(self, info: dict[str, Any]) -> jax.Array:
+        """
+        Strong exponential reward for getting very close to goal.
+        Provides gradient even when within a few cm of goal.
+        """
+        dist = jp.linalg.norm(info["rel_goal"])
+        
+        # Linear reward that increases as distance decreases
+        # At 0.5m: 0.0, at 0.4m: 0.2, at 0.2m: 0.6, at 0.1m: 0.8, at 0.0m: 1.0
+        max_reward_distance = 0.5  # Distance beyond which reward is 0
+        proximity_reward = jp.clip(1.0 - (dist / max_reward_distance), 0.0, 1.0)
+        
+        return proximity_reward
 
     # Base related rewards
     def _cost_lin_vel_z(self, local_linvel) -> jax.Array:
@@ -244,6 +229,28 @@ class ObstacleAvoidanceRewards:
         reward *= cmd_norm > 0.1  # No reward for zero commands.
         return reward
     
+    def _reward_torso_velocity_alignment(
+        self, data: mjx.Data, command: jax.Array
+    ) -> jax.Array:
+        """
+        Reward for torso orientation aligning with commanded velocity direction.
+        Uses cosine of the angle between base yaw and commanded velocity direction.
+        Only active when command magnitude exceeds min_command_magnitude threshold.
+        """
+        base_R = data.site_xmat[self.env._site_id]
+        base_yaw = jp.arctan2(base_R[1, 0], base_R[0, 0])
+        cmd_xy = command[:2]  # [vx, vy]
+        cmd_norm = jp.linalg.norm(cmd_xy) + 1e-8
+        
+        has_command = cmd_norm > self.config.min_command_magnitude
+        cmd_yaw = jp.arctan2(cmd_xy[1], cmd_xy[0])
+        yaw_diff = jp.fmod(base_yaw - cmd_yaw + jp.pi, 2 * jp.pi) - jp.pi
+        
+        alignment = jp.cos(yaw_diff)
+        alignment = jp.clip(alignment, 0.0, 1.0)
+        
+        return jp.where(has_command, alignment, jp.array(0.0))
+    
     def _cost_feet_distance(self, data: mjx.Data, info: dict[str, Any]) -> jax.Array:
         del info  # Unused.
         left_foot_pos = data.site_xpos[self.env._feet_site_id[0]]
@@ -267,36 +274,6 @@ class ObstacleAvoidanceRewards:
 
         # Reward when the corresponding foot is **not** in contact
         return (left_swing & ~feet_contact[0]) + (right_swing & ~feet_contact[1])
-    
-    def _reward_feet_positions(
-        self, data: mjx.Data, info: dict[str, Any], contact: jp.ndarray
-    ):
-        """Reward feet for being near their planned positions when airborne."""
-    
-        # Get current step index from planner
-        footstep_idx = self.env.planner.get_step_index(
-            info["plan_time"], info["start_times"], info["num_steps"]
-        )
-        
-        # Get actual foot positions and contacts
-        left_pos = data.site_xpos[self.env._feet_site_id[0]][:2]
-        right_pos = data.site_xpos[self.env._feet_site_id[1]][:2]
-        left_is_airborne = ~contact[0]
-        right_is_airborne = ~contact[1]
-        
-        # Get target foot positions
-        swing_target = info["end_poses"][footstep_idx][:2]
-        
-        # Compute errors
-        left_error = jp.sum(jp.square(left_pos - swing_target))
-        right_error = jp.sum(jp.square(right_pos - swing_target))
-    
-        # The phase-based reward already handles "should this foot be swinging"
-        # This just guides "where should it go when it is swinging"
-        left_reward = left_is_airborne * jp.exp(-left_error / 0.5)
-        right_reward = right_is_airborne * jp.exp(-right_error / 0.5)
-    
-        return left_reward + right_reward
     
     def _cost_feet_roll(self, data: mjx.Data) -> jax.Array:
         """Penalty for feet roll angles (should be close to 0)."""

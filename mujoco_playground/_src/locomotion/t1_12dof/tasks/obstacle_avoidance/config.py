@@ -3,7 +3,7 @@ Dataclass-based configuration for the Booster T1 joystick task.
 """
 
 from dataclasses import dataclass, field, replace
-from typing import Tuple, Dict, Any
+from typing import Literal, Tuple, Dict, Any
 import jax.numpy as jp
 from enum import IntEnum
 
@@ -23,45 +23,48 @@ class FootstepPlannerConfig:
     """Time step duration for the planner. TODO: should be the same as episode step length? """
     Tp: float = P * dt
     """Total planning horizon in seconds."""
-    step_frequency: float = 1.75
-    """Steps per second (one step = swing phase + stance phase)"""
     max_steps: int = 50
     """Maximum steps to plan ahead. Should be >= Tp * step_frequency"""
     first_swing: Foot = Foot.LEFT
     """Which foot is the first swing foot"""
     step_width: float = 0.1
     """Lateral foot separation from the pelvis. Depends on the robot dimensions"""
-    swing_percentage: float = 0.6
+    swing_percentage: float = 0.4
     """Percentage duration of the swing phase for each step."""
     peak_height: float = 0.05
     """Desired height of each foot at peak phase."""
-    warmup_ds_factor: float = 1
+    warmup_ds_factor: float = 0.6
     """Number of warmup steps for the double support phase"""
     theta_max: float = 0.25
     """Maximum foot rotation angle during the swing phase [rad]"""
 
 @dataclass
 class SceneConfig:
+    scenario: Literal["A", "B", "C"] = field(default="Random")
     bins: int = 39
     bin_size: float = 0.25
     abs_gamma: float = 0.91
+    goal: jp.ndarray = field(init=False)
+    obstacles: jp.ndarray = field(init=False)
+    num_obstacles: int = field(init=False)
+    width: float = field(init=False)
+    height: float = field(init=False)
+    origin: jp.ndarray = field(init=False)
     
     def __post_init__(self):
         self.width = self.bins * self.bin_size
         self.height = self.bins * self.bin_size
         self.origin = jp.array([ -self.width / 2, -self.height / 2 ])
         
-        # SCENARIO A
-        self.obstacles = jp.array([[6, -1], [6, 0]])
-        self.goal = jp.array([14, 0])
-        
-        # SCENARIO B
-        # self.obstacles = jp.array([[5, -3], [5, -2], [5, -1], [10, 3], [10, 2], [10, 1]]) 
-        # self.goal = jp.array([14, 0])
-        
-        # SCENARIO C
-        # self.obstacles = jp.array([[6, 3], [6, 2], [6, 1], [6, 0], [6, -1], [6, -2], [6, -3], [6, -4], [6, -5], [6, -6], [5, 3], [4, 3], [3, 3], [2, 3], [5, -6], [4, -6], [3, -6], [2, -6]]) # SCENARIO C
-        # self.goal = jp.array([14, 0])
+        if self.scenario == "A":
+            self.obstacles = jp.array([[6, -1], [6, 0]])
+            self.goal = jp.array([14, 0])
+        elif self.scenario == "B":
+            self.obstacles = jp.array([[5, -3], [5, -2], [5, -1], [10, 3], [10, 2], [10, 1]]) 
+            self.goal = jp.array([12, 2])
+        else:
+            self.obstacles = jp.array([[6, 3], [6, 2], [6, 1], [6, 0], [6, -1], [6, -2], [6, -3], [6, -4], [6, -5], [6, -6], [5, 3], [4, 3], [3, 3], [2, 3], [5, -6], [4, -6], [3, -6], [2, -6]]) # SCENARIO C
+            self.goal = jp.array([8, 4])
         
         self.num_obstacles = self.obstacles.shape[0]
         
@@ -88,26 +91,25 @@ class SceneConfig:
         world_x, world_y = world_pos[0], world_pos[1]
         return jp.array([world_x, world_y, 0.0])
     
-
-
 @dataclass
 class RewardScales:
     """Reward scaling factors for different reward components."""
-    # Tracking related rewards
-    tracking_lin_vel_x: float = 2.0
-    tracking_lin_vel_y: float = 2.0
+    # Velocity tracking
+    tracking_lin_vel_x: float = 1.5
+    tracking_lin_vel_y: float = 1.5
     tracking_ang_vel: float = 2.0
-    goal_orientation: float = 0.1
-    goal_distance: float = 0.01
     
     # Abstract Map
-    reward_map: float = 1.0
     cost_collision: float = -10.0
-    planner_com_x: float = 3.0
-    planner_com_y: float = 3.0
+    reward_map: float = 1.0
+    goal_distance: float = 0.01
+    goal_proximity: float = 1.0
+    torso_velocity_alignment: float = 0.0
+    
+    # Feet Trajectories
     feet_swing: float = 3.0
     feet_air_time: float = 2.0
-
+    
     # Base related rewards
     lin_vel_z: float = -2.0
     ang_vel_xy: float = -0.2
@@ -124,7 +126,7 @@ class RewardScales:
     dof_acc: float = -1.0e-7
     dof_vel: float = -1.0e-4
     
-    # Feet kinematics related rewards
+    # Feet kinematics
     feet_slip: float = -0.1
     feet_distance: float = -15.0
     feet_yaw_diff: float = -1.0
@@ -133,19 +135,22 @@ class RewardScales:
     feet_collision: float = -10.0
     
     # Other rewards
-    survival: float = 0.15
+    survival: float = 0.05
     root_acc: float = -1.0e-4
     dof_pos_limits: float = -1.0
     episode_failed: float = 1.0
     
+    
 @dataclass
 class CurriculumConfig:
-    ramp_steps: int = 20000
-    tracking_lin_vel_x: float = 0.5
-    tracking_lin_vel_y: float = 0.5
-    tracking_ang_vel: float = 1.0
-    # cost_to_goal_distance: float = 0.0
-    # cost_to_goal_orientation: float = 0.0
+    ramp_steps: int = 10_000
+    tracking_lin_vel_x: float = 2.0
+    tracking_lin_vel_y: float = 2.0
+    tracking_ang_vel: float = 2.0
+    velocity_direction_alignment: float = 0.0
+    torso_velocity_alignment: float = 1.0
+    planner_com_x: float = 0.0
+    planner_com_y: float = 0.0
 
 
 @dataclass
@@ -156,6 +161,7 @@ class RewardConfig:
     tracking_sigma: float = 0.5
     base_height_target: float = 0.68
     swing_period: float = 0.2
+    min_command_magnitude: float = 0.05
     
 
 @dataclass
