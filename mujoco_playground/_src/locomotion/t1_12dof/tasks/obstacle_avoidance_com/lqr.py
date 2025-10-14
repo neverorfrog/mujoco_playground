@@ -4,7 +4,7 @@ from dataclasses import dataclass, field, replace
 import jax
 from jax import jit, lax
 import numpy as np
-from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance.utils import COMTrajectory, ZMPTrajectory
+from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance_com.utils import COMTrajectory, ZMPTrajectory
     
 @jit 
 def dare(A: jp.ndarray, B: jp.ndarray, Q: jp.ndarray, R: jp.ndarray, max_iter=5_000) -> jp.ndarray:
@@ -434,3 +434,5 @@ def plot_control_results(
     print(f"  Mean error:     {np.mean(zmp_y_ref_np - zmp_y_actual_np):.6f} m")
     print(f"  RMS error:      {np.sqrt(np.mean((zmp_y_ref_np - zmp_y_actual_np)**2)):.6f} m")
     print(f"  Max error:      {np.max(np.abs(zmp_y_ref_np - zmp_y_actual_np)):.6f} m")
+
+    plt.savefig(f"preview_control_{lip.formulation}.png")

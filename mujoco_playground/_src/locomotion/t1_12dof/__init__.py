@@ -20,5 +20,6 @@
 
 from .tasks.joystick import env as joystick
 from .tasks.obstacle_avoidance import env as obstacle_avoidance
+from .tasks.obstacle_avoidance_com import env as obstacle_avoidance_com
 
-__all__ = [joystick, obstacle_avoidance]
+__all__ = [joystick, obstacle_avoidance, obstacle_avoidance_com]

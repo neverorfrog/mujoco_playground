@@ -1,10 +1,9 @@
 from dataclasses import dataclass, replace
 import jax.numpy as jp
 import jax
-from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance.config import FootstepPlannerConfig, Foot
-from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance.map import Map
-from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance.lqr import LipDynamics, preview_control, plot_control_results
-from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance.utils import ZMPTrajectory, FootstepPlan
+from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance_com.config import FootstepPlannerConfig, Foot
+from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance_com.map import Map
+from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance_com.utils import ZMPTrajectory, FootstepPlan
 
 @jax.tree_util.register_pytree_node_class
 @dataclass
@@ -99,8 +98,8 @@ class FootstepPlanner:
                 command = self.map.get_command(state.pelvis_pos, state.pelvis_theta)
                 
                 # Scale command to reasonable walking speeds
-                linear_scale = 0.5
-                angular_scale = 0.5 
+                linear_scale = 0.9
+                angular_scale = 0.7 
                 vx = command[0] * linear_scale
                 vy = command[1] * linear_scale
                 w = command[2] * angular_scale
@@ -416,7 +415,8 @@ def main():
     initial_right_foot = jp.array([0.0, -0.1, 0.0])
     fs_plan = planner.plan(
         initial_left_foot,
-        initial_right_foot
+        initial_right_foot,
+        step_frequency=3.0
     )
     
     print(fs_plan.start_times)
@@ -451,8 +451,8 @@ def main():
         initial_com_acc
     )
     
-    # plot_control_results(lip, zmp_traj, com_traj)
-    map.plot_map(fs_plan, zmp_traj, com_traj)
+    plot_control_results(lip, zmp_traj, com_traj)
+    map.plot_map(filename="map.png")
 
 
 if __name__ == "__main__":
