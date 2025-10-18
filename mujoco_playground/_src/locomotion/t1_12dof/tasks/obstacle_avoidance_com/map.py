@@ -22,6 +22,7 @@ class Map:
         self.width = self.scene_config.width
         self.height = self.scene_config.height
         self.origin = self.scene_config.origin
+        self.START = [self.height // 2, self.width // 2] 
         self.abs_gamma = self.scene_config.abs_gamma
         self.CARDINAL_COST = 1.0
         self.DIAGONAL_COST = 1.5
@@ -29,7 +30,7 @@ class Map:
         self.GOAL = 0.0
         self.OBSTACLE = 1000.0  # Changed to large float instead of 2 * bins
         self.NEAR_OBSTACLE = 1.0  # Cost for cells adjacent to obstacles
-        self.NEAR_OBSTACLE_INFLATE = 2.0  # Inflation cost for cells adjacent to obstacles
+        self.NEAR_OBSTACLE_INFLATE = 5.0  # Inflation cost for cells adjacent to obstacles
         self.directions = jp.array([
             [1, 0], [-1, 0], [0, 1], [0, -1],  # Cardinal
             [1, 1], [1, -1], [-1, 1], [-1, -1] # Diagonal
@@ -41,6 +42,7 @@ class Map:
         self._gradient = self._compute_gradient(self._map)
         self._policy = self._compute_greedy_policy(self._map)
         self._xml = self.generate_scene_xml(self.goal, self.obstacles)
+        
         
         
     def get_command(self, pos: jp.ndarray, robot_yaw: float) -> jp.ndarray:
@@ -56,9 +58,9 @@ class Map:
             True  # Default case
         ]
         scale_values = [
-            jp.array([0.8, 0.8]),  
-            jp.array([0.85, 0.85]),  
-            jp.array([0.95, 0.95]),
+            jp.array([0.7, 1.0]),  
+            jp.array([0.8, 1.0]),  
+            jp.array([0.9, 1.0]),
             jp.array([1.0, 1.0])   
         ]
         linear_scale, angular_scale = jp.select(conditions, scale_values)
@@ -335,6 +337,8 @@ class Map:
         screen_height = height * cell_size
         surface = pygame.Surface((screen_width, screen_height))
         surface.fill((255, 255, 255))
+        show_any_footstep_data = footstep_plan is not None or zmp_trajectory is not None or com_trajectory is not None
+        center_i, center_j = height // 2, width // 2
 
         # Draw base map
         for i in range(height):
@@ -342,21 +346,37 @@ class Map:
                 val = disp_map[i, j]
                 rect = pygame.Rect(j * cell_size, i * cell_size, cell_size, cell_size)
                 
-                bg_color = (200, 200, 200)
+                bg_color = (200, 200, 200)  # Default gray
                 if val == self.OBSTACLE:
                     bg_color = (50, 50, 50)
                 elif val != self.FREE:
                     normalized_cost = float(val) / max_cost if max_cost > 0 else 0
+                    normalized_cost = max(0.0, min(1.0, normalized_cost))  # Clamp to [0, 1]
                     r = int(255 * normalized_cost)
                     g = int(255 * (1 - normalized_cost))
                     b = 0
                     bg_color = (r, g, b)
                 
                 pygame.draw.rect(surface, bg_color, rect)
-                pygame.draw.rect(surface, (128, 128, 128), rect, 1)
+                
+                if val == self.OBSTACLE:
+                    text_surface = font_emoji.render("🧱", True, (50, 50, 50))
+                    text_rect = text_surface.get_rect(center=rect.center)
+                    surface.blit(text_surface, text_rect)
+                elif val == self.GOAL:
+                    text_surface = font_emoji.render("🎯", True, (50, 50, 50))
+                    text_rect = text_surface.get_rect(center=rect.center)
+                    surface.blit(text_surface, text_rect)
+                elif i == center_i and j == center_j and val != self.OBSTACLE:
+                    text_surface = font_emoji.render("🤖", True, (50, 50, 50))
+                    text_rect = text_surface.get_rect(center=rect.center)
+                    surface.blit(text_surface, text_rect)
+                else:
+                    pass
+
 
                 # Draw velocity field arrows or cost numbers
-                if show_velocity_field:
+                if show_velocity_field and not show_any_footstep_data:
                     # Get the policy vector for this cell (flipped coordinates)
                     policy_vec = disp_policy[i, j]
                     
@@ -398,17 +418,7 @@ class Map:
                         )
                             
                         pygame.draw.polygon(surface, (0, 0, 0), [(float(end_x), float(end_y)), head_point1, head_point2], int(math.floor(magnitude)))
-                    elif val == self.GOAL:
-                        # Still show goal emoji
-                        text_surface = font_emoji.render("🎯", True, (50, 50, 50))
-                        text_rect = text_surface.get_rect(center=rect.center)
-                        surface.blit(text_surface, text_rect)
-                    elif val == self.OBSTACLE:
-                        # Still show obstacle emoji
-                        text_surface = font_emoji.render("🧱", True, (50, 50, 50))
-                        text_rect = text_surface.get_rect(center=rect.center)
-                        surface.blit(text_surface, text_rect)
-                else:
+                elif not show_velocity_field and not show_any_footstep_data:
                     # Original behavior: show cost numbers
                     is_emoji = False
                     text_str = ""
@@ -416,6 +426,8 @@ class Map:
                         text_str, is_emoji = "🎯", True
                     elif val == self.OBSTACLE:
                         text_str, is_emoji = "🧱", True
+                    elif i == center_i and j == center_j and val != self.OBSTACLE:
+                        text_str, is_emoji = "🤖", True
                     elif val != self.FREE and footstep_plan is None:
                         text_str = f"{val:.1f}"
 
@@ -425,6 +437,8 @@ class Map:
                         text_surface = font_to_use.render(text_str, True, text_color)
                         text_rect = text_surface.get_rect(center=rect.center)
                         surface.blit(text_surface, text_rect)
+                else:
+                    pass
 
         def world_to_pixel(pos):
             """Convert world [x, y] to pixel [px, py]"""
@@ -455,20 +469,52 @@ class Map:
             num_steps = footstep_plan.num_steps
             
             for i in range(num_steps):
-                start_pose = footstep_plan.start_poses[i]
                 end_pose = footstep_plan.end_poses[i]
                 swing_foot = footstep_plan.swing_foot_ids[i]
+                
+                # Get orientation if available (assuming it's in the pose)
+                theta = float(end_pose[2]) if len(end_pose) > 2 else 0.0
                 
                 # Color based on foot (left = blue, right = red)
                 color = (100, 100, 255) if swing_foot == 0 else (255, 100, 100)
                 
-                # Draw start position (hollow)
-                px_start, py_start = world_to_pixel(start_pose)
-                pygame.draw.circle(surface, color, (px_start, py_start), 10, 4)
-                
-                # Draw end position (filled)
+                # Draw end position as oriented rectangle
                 px_end, py_end = world_to_pixel(end_pose)
-                pygame.draw.circle(surface, color, (px_end, py_end), 10)
+                
+                # Footstep dimensions (adjust as needed)
+                foot_length = 25
+                foot_width = 15
+                
+                # Create rectangle points centered at origin
+                half_length = foot_length / 2
+                half_width = foot_width / 2
+                rect_points = [
+                    (-half_length, -half_width),
+                    (half_length, -half_width),
+                    (half_length, half_width),
+                    (-half_length, half_width)
+                ]
+                
+                # Transform theta from world coordinates to pixel coordinates
+                # World: x points north, y points west, theta is CCW from x-axis
+                # Pixel: x is horizontal (maps to -y world), y is vertical (maps to -x world)
+                # The transformation flips both axes, so we need to adjust the angle
+                theta_pixel = -theta - math.pi / 2
+                
+                # Rotate and translate points
+                cos_theta = math.cos(theta_pixel)
+                sin_theta = math.sin(theta_pixel)
+                rotated_points = []
+                for x, y in rect_points:
+                    # Rotate
+                    rx = x * cos_theta - y * sin_theta
+                    ry = x * sin_theta + y * cos_theta
+                    # Translate
+                    rotated_points.append((px_end + rx, py_end + ry))
+                
+                # Draw filled rectangle
+                pygame.draw.polygon(surface, color, rotated_points)
+                pygame.draw.polygon(surface, (0, 0, 0), rotated_points, 2)  # Black outline
                 
                 
         if com_trajectory is not None:

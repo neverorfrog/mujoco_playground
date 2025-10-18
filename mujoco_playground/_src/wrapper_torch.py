@@ -150,6 +150,7 @@ class RSLRLBraxWrapper(VecEnv):
     self.episode_success_queue = deque(maxlen=100)
     self.episode_fall_queue = deque(maxlen=100)
     self.episode_timeout_queue = deque(maxlen=100)
+    self.episode_final_distance_queue = deque(maxlen=100)
     self.last_torques = None
     self.episode_power = deque(maxlen=100)
     self.episode_cot = deque(maxlen=100)
@@ -215,16 +216,19 @@ class RSLRLBraxWrapper(VecEnv):
         goal_reached_vec = _jax_to_torch(self.env_state.metrics["goal_reached"])
         fallen_vec = _jax_to_torch(self.env_state.metrics["fallen"])
         timeout_vec = _jax_to_torch(self.env_state.metrics["timeout"])
+        final_distance_vec = _jax_to_torch(self.env_state.metrics["final_distance_to_goal"])
         
         for idx in torch.where(done)[0]:
           self.episode_success_queue.append(goal_reached_vec[idx].item())
           self.episode_fall_queue.append(fallen_vec[idx].item())
           self.episode_timeout_queue.append(timeout_vec[idx].item())
+          self.episode_final_distance_queue.append(final_distance_vec[idx].item())
           
       if len(self.episode_success_queue) > 0:
           info_ret["log"]["rolling_success_rate"] = np.mean(self.episode_success_queue)
           info_ret["log"]["rolling_fall_rate"] = np.mean(self.episode_fall_queue)
           info_ret["log"]["rolling_timeout_rate"] = np.mean(self.episode_timeout_queue)
+          info_ret["log"]["avg_final_distance_to_goal"] = np.mean(self.episode_final_distance_queue)
 
 
     return obs, reward, done, info_ret

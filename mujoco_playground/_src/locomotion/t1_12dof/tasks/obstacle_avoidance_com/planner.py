@@ -1,9 +1,11 @@
 from dataclasses import dataclass, replace
+import os
 import jax.numpy as jp
 import jax
-from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance_com.config import FootstepPlannerConfig, Foot
+from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance_com.config import FootstepPlannerConfig, Foot, SceneConfig
 from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance_com.map import Map
 from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance_com.utils import ZMPTrajectory, FootstepPlan
+from mujoco_playground._src.locomotion.t1_12dof.tasks.obstacle_avoidance_com.lqr import preview_control, LipDynamics, plot_control_results
 
 @jax.tree_util.register_pytree_node_class
 @dataclass
@@ -408,7 +410,10 @@ class FootstepPlanner:
     
 
 def main():
-    map = Map()
+    scenario = "Slides"
+    bins = 19
+    scene_config = SceneConfig(scenario=scenario)
+    map = Map(scene_config)
     planner = FootstepPlanner(map)
     
     initial_left_foot = jp.array([0.0, 0.1, 0.0])
@@ -451,8 +456,16 @@ def main():
         initial_com_acc
     )
     
-    plot_control_results(lip, zmp_traj, com_traj)
-    map.plot_map(filename="map.png")
+    map_folder = "/home/neverorfrog/code/loco_rlmpc/maps"
+    os.makedirs(map_folder, exist_ok=True)
+    
+    map.plot_map(filename=f"{map_folder}/map_{scenario}_dijkstra.png")
+    
+    # map.plot_map(filename=f"{map_folder}/map_{scenario}_gradient.png", show_velocity_field=True)
+    
+    # map.plot_map(footstep_plan=fs_plan, zmp_trajectory=zmp_traj, filename=f"{map_folder}/map_{scenario}_footsteps.png")
+    
+    # map.plot_map(footstep_plan=fs_plan, zmp_trajectory=zmp_traj, com_trajectory=com_traj, filename=f"map_{scenario}_traj.png")
 
 
 if __name__ == "__main__":

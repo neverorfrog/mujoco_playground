@@ -1,5 +1,7 @@
 from jax import numpy as jp
 from dataclasses import dataclass
+from jax import tree_util
+import jax
 
 @dataclass
 class COMTrajectory:
@@ -11,20 +13,67 @@ class COMTrajectory:
     x_accelerations: jp.ndarray  # (N,) COM accelerations in x direction
     y_accelerations: jp.ndarray  # (N,) COM accelerations in y direction
     
+def _com_trajectory_flatten(traj):
+    """Flatten COMTrajectory into arrays and auxiliary data."""
+    arrays = (
+        traj.x_positions,
+        traj.y_positions,
+        traj.x_velocities,
+        traj.y_velocities,
+        traj.x_accelerations,
+        traj.y_accelerations,
+    )
+    aux_data = None  # No auxiliary data needed
+    return arrays, aux_data
+
+def _com_trajectory_unflatten(aux_data, arrays):
+    """Reconstruct COMTrajectory from flattened arrays."""
+    return COMTrajectory(*arrays)
+
+# Register the pytree
+tree_util.register_pytree_node(
+    COMTrajectory,
+    _com_trajectory_flatten,
+    _com_trajectory_unflatten
+)
+    
 @dataclass
 class FootstepPlan:
-    """
-    Represents a planned sequence of footstep positions as JAX arrays.
-    """
-    # Footstep data (size = max_steps)
-    swing_foot_ids: jp.ndarray
-    start_poses: jp.ndarray
-    end_poses: jp.ndarray
-    support_poses: jp.ndarray
-    start_times: jp.ndarray
-    ds_start_times: jp.ndarray
-    end_times: jp.ndarray
-    num_steps: int = 0
+    swing_foot_ids: jax.Array
+    start_poses: jax.Array
+    end_poses: jax.Array
+    support_poses: jax.Array
+    start_times: jax.Array
+    ds_start_times: jax.Array
+    end_times: jax.Array
+    num_steps: jax.Array
+
+# Register FootstepPlan as a JAX pytree
+def _footstep_plan_flatten(plan):
+    """Flatten FootstepPlan into arrays and auxiliary data."""
+    arrays = (
+        plan.swing_foot_ids,
+        plan.start_poses,
+        plan.end_poses,
+        plan.support_poses,
+        plan.start_times,
+        plan.ds_start_times,
+        plan.end_times,
+        plan.num_steps,
+    )
+    aux_data = None  # No auxiliary data needed
+    return arrays, aux_data
+
+def _footstep_plan_unflatten(aux_data, arrays):
+    """Reconstruct FootstepPlan from flattened arrays."""
+    return FootstepPlan(*arrays)
+
+# Register the pytree
+tree_util.register_pytree_node(
+    FootstepPlan,
+    _footstep_plan_flatten,
+    _footstep_plan_unflatten
+)
     
     
 @dataclass
@@ -40,6 +89,33 @@ class ZMPTrajectory:
     zmp_vel_windows_x: jp.ndarray
     zmp_vel_windows_y: jp.ndarray
     zmp_vel_windows_theta: jp.ndarray
+    
+def _zmp_trajectory_flatten(traj):
+    """Flatten ZMPTrajectory into arrays and auxiliary data."""
+    arrays = (
+        traj.zmp_midpoints_x,
+        traj.zmp_midpoints_y,
+        traj.zmp_midpoints_theta,
+        traj.zmp_windows_x,
+        traj.zmp_windows_y,
+        traj.zmp_windows_theta,
+        traj.zmp_vel_windows_x,
+        traj.zmp_vel_windows_y,
+        traj.zmp_vel_windows_theta,
+    )
+    aux_data = None  # No auxiliary data needed
+    return arrays, aux_data
+
+def _zmp_trajectory_unflatten(aux_data, arrays):
+    """Reconstruct ZMPTrajectory from flattened arrays."""
+    return ZMPTrajectory(*arrays)
+
+# Register the pytree
+tree_util.register_pytree_node(
+    ZMPTrajectory,
+    _zmp_trajectory_flatten,
+    _zmp_trajectory_unflatten
+)
     
 @dataclass
 class FootstepState:

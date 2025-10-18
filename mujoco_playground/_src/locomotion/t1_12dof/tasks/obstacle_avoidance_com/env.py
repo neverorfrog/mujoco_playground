@@ -54,32 +54,81 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
     ):
         xml_path = consts.task_to_xml(task).as_posix()
+        self.randomize_scenario = config.scene_config.scenario == "Random"
+        self.rewards = ObstacleAvoidanceRewards(self)
+        self.lip = LipDynamics(N=75, dt=config.ctrl_dt, zc=config.reward_config.base_height_target)
         
-        # Map and scene setup
-        if config.scene_config.scenario == "Random":
-            scenario = choice(["A", "B"])
-            config.scene_config.scenario = scenario
+        if self.randomize_scenario:
+            self.scenarios = ["A", "B", "C"]
+            self.maps = {}
+            self.goals = {}
+            self.obstacle_geom_ids = {}
+            self.planners = {}
             
-        self.scene_cfg = SceneConfig(scenario=config.scene_config.scenario)
-        self.map = Map(self.scene_cfg)
-        goal = self.scene_cfg.goal_position
-        self.goal = jp.array(goal[:2])
+            # Find scenario with most obstacles to use for unified XML
+            max_obstacles = 0
+            max_scenario = None
+            for scenario in self.scenarios:
+                scene_cfg = SceneConfig(scenario=scenario)
+                if scene_cfg.num_obstacles > max_obstacles:
+                    max_obstacles = scene_cfg.num_obstacles
+                    max_scenario = scenario
+            self.max_obstacles = max_obstacles
+            
+            # Create unified XML with all possible obstacles
+            unified_scene_cfg = SceneConfig(scenario=max_scenario)
+            unified_map = Map(unified_scene_cfg)
+            xml_content = unified_map._xml
+            self.padded_obstacles = {}
+                
+            for scenario in self.scenarios:
+                scene_cfg = SceneConfig(scenario=scenario)
+                map_instance = Map(scene_cfg)
+                self.maps[scenario] = map_instance
+                self.goals[scenario] = jp.array(scene_cfg.goal_position[:2])
+                planner_instance = FootstepPlanner(map_instance)
+                planner_instance.config.dt = config.ctrl_dt
+                self.planners[scenario] = planner_instance
+                
+                # Pad obstacles to max_obstacles size
+                obstacles = jp.array(map_instance.obstacles)  # Shape: (num_obstacles, 3)
+                num_obstacles = obstacles.shape[0]
+                if num_obstacles < max_obstacles:
+                    # Pad with zeros (or dummy values far away)
+                    padding = jp.zeros((max_obstacles - num_obstacles, 3))
+                    padded = jp.concatenate([obstacles, padding], axis=0)
+                else:
+                    padded = obstacles
+                self.padded_obstacles[scenario] = padded
+                
+            self.current_scenario = self.scenarios[0]
+            self.scene_cfg = SceneConfig(scenario=self.current_scenario)
+            self.map = self.maps[self.current_scenario]
+            self.goal = self.goals[self.current_scenario]
+            
+        else:
+            self.scenarios = []
+            self.current_scenario = config.scene_config.scenario
+            self.scene_cfg = SceneConfig(scenario=self.current_scenario)
+            self.map = Map(self.scene_cfg)
+            self.goal = jp.array(self.scene_cfg.goal_position[:2])
+            xml_content = self.map._xml
+            self.planner = FootstepPlanner(self.map)
+            self.planner.config.dt = config.ctrl_dt
+            self.max_obstacles = self.scene_cfg.num_obstacles
         
         super().__init__(
             xml_path=xml_path,
-            xml_content=self.map._xml,
+            xml_content=xml_content,
             config=config,
             config_overrides=config_overrides,
         )
     
+        jax.debug.print("RANDOMIZE SCENARIO: {}", self.randomize_scenario)
         jax.debug.print("GOAL POSITION: {}", self.scene_cfg.goal)
         jax.debug.print("OBSTACLES: {}", self.scene_cfg.obstacles)
-
         self._post_init()
-        self.lip = LipDynamics(N=75, dt=self._config.ctrl_dt, zc=self._config.reward_config.base_height_target)
-        self.rewards = ObstacleAvoidanceRewards(self)
-        self.planner = FootstepPlanner(self.map)
-        self.planner.config.dt = self._config.ctrl_dt
+
         
     def _post_init(self) -> None:
         self._init_q = jp.array(self._mj_model.keyframe("home").qpos)
@@ -140,10 +189,21 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
 
         self._left_foot_box_geom_id = self._mj_model.geom("left_foot").id
         self._right_foot_box_geom_id = self._mj_model.geom("right_foot").id
-        self._obstacle_geom_ids = []
-        for i in range(self.scene_cfg.num_obstacles):
-            self._obstacle_geom_ids.append(self._mj_model.geom(f"obstacle_{i}").id)
-
+        
+        if self.randomize_scenario:
+            for scenario in self.scenarios:
+                scene_cfg = SceneConfig(scenario=scenario)
+                geom_ids = []
+                for i in range(scene_cfg.num_obstacles):
+                    geom_ids.append(self._mj_model.geom(f"obstacle_{i}").id)
+                self.obstacle_geom_ids[scenario] = jp.array(geom_ids)
+            self._obstacle_geom_ids = self.obstacle_geom_ids[self.current_scenario]
+        else:
+            self._obstacle_geom_ids = []
+            for i in range(self.scene_cfg.num_obstacles):
+                self._obstacle_geom_ids.append(self._mj_model.geom(f"obstacle_{i}").id)
+            self._obstacle_geom_ids = jp.array(self._obstacle_geom_ids)
+        
         force_range = self._mj_model.actuator_forcerange  # (nact, 2)
         force_limited = self._mj_model.actuator_forcelimited  # (nact,)
         hi = jp.array(force_range[:, 1])
@@ -186,41 +246,103 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         )
         push_interval_steps = jp.round(push_interval / self.dt).astype(jp.int32)
         
-        # ======== Footstep planning and zmp trajectory generation ========
+        
+        # =============== Scenario Selection (JAX-compatible) ============
+        rng, scenario_rng = jax.random.split(rng)
+        scenario_idx = jax.lax.cond(
+            self.randomize_scenario,
+            lambda rng: jax.random.randint(rng, (), 0, len(self.scenarios)),
+            lambda rng: 0,
+            scenario_rng
+        )
+
         # --------- Initial feet poses
         left_foot_pose = data.site_xpos[self._feet_site_id[0]]
         right_foot_pose = data.site_xpos[self._feet_site_id[1]]
         left_foot_xy = left_foot_pose[:2]   # Shape: (2,) - [x, y]
         right_foot_xy = right_foot_pose[:2] # Shape: (2,) - [x, y]
-        # We assume initial orientation is 0 (aligned with world frame)
         left_foot_pose = jp.concatenate([left_foot_xy, jp.array([0.0])])   # (3,)
         right_foot_pose = jp.concatenate([right_foot_xy, jp.array([0.0])]) # (3,)
         
-        # --------- Plan
-        fs_plan = self.planner.plan(
-            left_foot_pose=left_foot_pose,    # Starting position
-            right_foot_pose=right_foot_pose,  # Starting position
-            step_frequency=2 * gait_freq,     # Steps per second
-            start_time=0.0                    # Plan starts at t=0
-        )
-        zmp_traj = self.planner.compute_zmp_trajectory(fs_plan)
+        # Select scenario components - branch on self.randomize_scenario at Python level
+        # since it's a constant known at trace time
+        if self.randomize_scenario:
+            # Use lax.switch to select from pre-created scenarios
+            selected_goal = jax.lax.switch(
+                scenario_idx,
+                [lambda g=self.goals[s]: g for s in self.scenarios],
+            )
+            
+            selected_obstacles = jax.lax.switch(
+                scenario_idx,
+                [lambda obs=jp.array(self.maps[s].obstacles): obs for s in self.scenarios],
+            )
+            
+            # Pre-extract JAX arrays from maps
+            selected_map_array = jax.lax.switch(
+                scenario_idx,
+                [lambda m=self.maps[s]: m.get_map() for s in self.scenarios],
+            )
+            
+            selected_gradient = jax.lax.switch(
+                scenario_idx,
+                [lambda m=self.maps[s]: m.get_gradient() for s in self.scenarios],
+            )
+            
+            selected_command = jax.lax.switch(
+                scenario_idx,
+                [lambda m=self.maps[s]: m.get_command(data.qpos[:2], 0.0) for s in self.scenarios],
+            )
+            
+            fs_plan = jax.lax.switch(
+                scenario_idx,
+                [lambda p=self.planners[s]: p.plan(
+                    left_foot_pose=left_foot_pose,
+                    right_foot_pose=right_foot_pose,
+                    step_frequency=2 * gait_freq,
+                    start_time=0.0
+                ) for s in self.scenarios],
+            )
+            
+            zmp_traj = jax.lax.switch(
+                scenario_idx,
+                [lambda p=self.planners[s]: p.compute_zmp_trajectory(fs_plan) for s in self.scenarios],
+            )
+        else:
+            # Fixed scenario - no switching needed
+            selected_goal = self.goal
+            selected_obstacles = jp.array(self.map.obstacles)
+            selected_map_array = self.map.get_map()
+            selected_gradient = self.map.get_gradient()
+            selected_command = self.map.get_command(data.qpos[:2], 0.0)
+            
+                        
+            fs_plan = self.planner.plan(
+                left_foot_pose=left_foot_pose,
+                right_foot_pose=right_foot_pose,
+                step_frequency=2 * gait_freq,
+                start_time=0.0
+            )
+            zmp_traj = self.planner.compute_zmp_trajectory(fs_plan)
+            
+
+        # ======== Footstep planning and zmp trajectory generation ========
         current_com_pos = data.subtree_com[self._torso_body_id][:2]
         current_com_vel = data.subtree_linvel[self._torso_body_id][:2]
         current_com_acc = jp.array([0.0, 0.0])
         com_traj = preview_control(self.lip, zmp_traj, current_com_pos, current_com_vel, current_com_acc)
 
-        cmd = self.map.get_command(data.qpos[:2], 0.0)
-
         info = {
             # Map
-            "abs_goal": self.goal, # ENV
-            "rel_goal": self.goal - data.qpos[:2],
-            "obstacles": jp.array(self.map.obstacles),
+            "abs_goal": selected_goal, # ENV
+            "rel_goal": selected_goal - data.qpos[:2],
+            "obstacles": jp.array(selected_obstacles),
             "global_step": jp.array(0, dtype=jp.int32),
-            "map": self.map.get_map(),
-            "gradient": self.map.get_gradient(),
+            "map": selected_map_array,
+            "gradient": selected_gradient,
             "previous_com": data.subtree_com[self._torso_body_id],
             "cumulative_distance_to_goal": 0.0,
+            "scenario_idx": scenario_idx,
             # Footstep plan
             "plan_timestep": jp.array(0, dtype=jp.int32),
             "plan_time": 0.0,
@@ -240,8 +362,8 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
             # Other
             "rng": rng,
             "step": 0,
-            "command": cmd,
-            "last_command": cmd,
+            "command": selected_command,
+            "last_command": selected_command,
             "last_act": jp.zeros(self.mjx_model.nu),
             "last_last_act": jp.zeros(self.mjx_model.nu),
             "motor_targets": jp.zeros(self.mjx_model.nu),
@@ -272,6 +394,7 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         metrics["success"] = jp.zeros((), dtype=jp.float32)
         metrics["max_steps_reached"] = jp.zeros((), dtype=jp.float32)
         metrics["cumulative_distance_to_goal"] = jp.zeros((), dtype=jp.float32)
+        metrics["final_distance_to_goal"] = jp.zeros((), dtype=jp.float32)
         
         # gait quality metrics
         metrics["gait_avg_power"] = jp.zeros(())
@@ -356,13 +479,25 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         torso_R = data.site_xmat[self._site_id]
         robot_yaw = jp.arctan2(torso_R[1, 0], torso_R[0, 0])
         state.info["last_command"] = state.info["command"]
-        state.info["command"] = self.map.get_command(data.qpos[:2], robot_yaw)
+        if self.randomize_scenario:
+            state.info["command"] = jax.lax.switch(
+                state.info["scenario_idx"],
+                [lambda m=self.maps[s]: m.get_command(data.qpos[:2], robot_yaw) for s in self.scenarios]
+            )
+        else:
+            state.info["command"] = self.map.get_command(data.qpos[:2], robot_yaw)
+            
+        # Goal
         state.info["rel_goal"] = state.info["abs_goal"] - data.qpos[:2]
         state.info["cumulative_distance_to_goal"] += jp.linalg.norm(state.info["rel_goal"])
         
         # Get observation, reward and metrics
         obs = self._get_obs(data, state.info, contact)
         done, fallen, goal_reached, max_steps_reached = self._get_termination(data, state.info)
+        
+        # Track final distance to goal when episode ends
+        final_distance = jp.linalg.norm(state.info["rel_goal"])
+        
         gait_metrics = self._compute_gait_metrics(data, state.info)
         for k, v in gait_metrics.items():
             state.metrics[f"gait_{k}"] = v
@@ -372,11 +507,12 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         state.metrics["timeout"] = (max_steps_reached & ~goal_reached & ~fallen).astype(jp.float32)
         state.metrics["goal_reached"] = goal_reached.astype(jp.float32)
         state.metrics["cumulative_distance_to_goal"] = state.info["cumulative_distance_to_goal"]
+        state.metrics["final_distance_to_goal"] = final_distance
         state.metrics["root_height"] = data.qpos[2]
         rewards = self.rewards.get(
             data, action, state.info, state.metrics, done, first_contact, contact
         )
-        rewards["episode_failed"] = jp.where((fallen | max_steps_reached) & ~goal_reached, jp.array(-100.0), jp.array(0.0))
+        rewards["max_steps"] = jp.where(max_steps_reached & ~goal_reached, jp.array(-100.0), jp.array(0.0))
         
         curriculum_weights = self._get_curriculum_weights(state.info)
         for k, v in rewards.items():
@@ -507,11 +643,6 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         current_com = data.subtree_com[self._torso_body_id][:2]
         ref_com_pos_relative = jp.array([ref_com_x, ref_com_y]) - current_com
         
-        # ref_com_vel_x = info["ref_com_vel_x"][info["plan_timestep"]]
-        # ref_com_vel_y = info["ref_com_vel_y"][info["plan_timestep"]]
-        # ref_com_vel_relative = jp.array([ref_com_vel_x, ref_com_vel_y]) - data.subtree_linvel[self._torso_body_id][:2]
-        # info["rng"], noise_rng = jax.random.split(info["rng"])
-
         state = jp.hstack(
             [
                 noisy_linvel, # 3
@@ -519,8 +650,6 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
                 noisy_gravity,  # 3
                 info["command"],  # 3
                 info["rel_goal"],  # 2
-                ref_com_pos_relative,  # 2
-                # ref_com_vel_relative,  # 2
                 noisy_joint_angles - self._default_pose,  # 12
                 noisy_joint_vel,  # 12
                 info["last_act"],  # 12
@@ -532,10 +661,14 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
         global_angvel = self.get_global_angvel(data)
         feet_vel = data.sensordata[self._foot_linvel_sensor_adr].ravel()
         root_height = data.qpos[2]
+        
+        left_pos = data.site_xpos[self._feet_site_id[0]][:2]
+        right_pos = data.site_xpos[self._feet_site_id[1]][:2]
 
         privileged_state = jp.hstack(
             [
                 state,
+                ref_com_pos_relative,  # 2
                 gyro,  # 3
                 accelerometer,  # 3
                 gravity,  # 3
@@ -547,6 +680,8 @@ class ObstacleAvoidance(t1_base.T1LowDimEnv):
                 info["torques"],
                 contact,  # 2
                 feet_vel,  # 4*3
+                left_pos,  # 2
+                right_pos,  # 2
                 info["feet_air_time"],  # 2
                 info["cumulative_distance_to_goal"],  # 1
             ]

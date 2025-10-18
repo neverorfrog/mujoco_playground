@@ -40,7 +40,7 @@ class FootstepPlannerConfig:
 
 @dataclass
 class SceneConfig:
-    scenario: Literal["A", "B", "C"] = field(default="Random")
+    scenario: Literal["A", "B", "C", "Eval"] = field(default="A")
     bins: int = 39
     bin_size: float = 0.25
     abs_gamma: float = 0.91
@@ -57,15 +57,22 @@ class SceneConfig:
         self.origin = jp.array([ -self.width / 2, -self.height / 2 ])
         
         if self.scenario == "A":
-            self.obstacles = jp.array([[6, -1], [6, 0]])
-            self.goal = jp.array([14, 0])
+            self.obstacles = jp.array([[6, -2], [6, -1], [6, 0]])
+            self.goal = jp.array([14, 1])
         elif self.scenario == "B":
-            self.obstacles = jp.array([[5, -3], [5, -2], [5, -1], [10, 3], [10, 2], [10, 1]]) 
-            self.goal = jp.array([12, 2])
+            self.obstacles = jp.array([[4, 7], [5, 7], [6, 7]]) 
+            self.goal = jp.array([5, 14])
+        elif self.scenario == "C":
+            self.obstacles = jp.array([[3,-7], [4,-7], [5,-7]]) 
+            self.goal = jp.array([10, -14])
+        elif self.scenario == "Eval":
+            self.obstacles = jp.array([[6, 3], [6, 2], [6, 1], [6, 0], [6, -1], [6, -2], [6, -3], [6, -4], [6, -5], [6, -6], [5, 3], [4, 3], [3, 3], [2, 3], [5, -6], [4, -6], [3, -6], [2, -6]]) # SCENARIO EVAL
+            self.goal = jp.array([10, 5])
+        elif self.scenario == "Slides":
+            self.obstacles = jp.array([[3, -2], [3, -1], [3, 0]])
+            self.goal = jp.array([6, 1])
         else:
-            self.obstacles = jp.array([[6, 3], [6, 2], [6, 1], [6, 0], [6, -1], [6, -2], [6, -3], [6, -4], [6, -5], [6, -6], [5, 3], [4, 3], [3, 3], [2, 3], [5, -6], [4, -6], [3, -6], [2, -6]]) # SCENARIO C
-            self.goal = jp.array([8, 4])
-        
+            raise ValueError(f"Unknown scenario: {self.scenario}")
         self.num_obstacles = self.obstacles.shape[0]
         
     def map_to_world(self, map_pos: jp.ndarray, center: bool = True) -> jp.ndarray:

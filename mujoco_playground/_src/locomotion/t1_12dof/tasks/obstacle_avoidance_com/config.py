@@ -40,7 +40,7 @@ class FootstepPlannerConfig:
 
 @dataclass
 class SceneConfig:
-    scenario: Literal["A", "B", "C"] = field(default="Random")
+    scenario: Literal["A", "B", "C", "Eval"] = field(default="A")
     bins: int = 39
     bin_size: float = 0.25
     abs_gamma: float = 0.91
@@ -57,14 +57,25 @@ class SceneConfig:
         self.origin = jp.array([ -self.width / 2, -self.height / 2 ])
         
         if self.scenario == "A":
-            self.obstacles = jp.array([[6, -1], [6, 0]])
-            self.goal = jp.array([14, 0])
+            self.obstacles = jp.array([[6, -2], [6, -1], [6, 0]])
+            self.goal = jp.array([14, 1])
         elif self.scenario == "B":
-            self.obstacles = jp.array([[5, -3], [5, -2], [5, -1], [10, 3], [10, 2], [10, 1]]) 
-            self.goal = jp.array([14, 2])
+            self.obstacles = jp.array([[4, 7], [5, 7], [6, 7]]) 
+            self.goal = jp.array([5, 14])
+        elif self.scenario == "C":
+            self.obstacles = jp.array([[3,-7], [4,-7], [5,-7]]) 
+            self.goal = jp.array([10, -14])
+        elif self.scenario == "Eval":
+            self.obstacles = jp.array([[6, 3], [6, 2], [6, 1], [6, 0], [6, -1], [6, -2], [6, -3], [6, -4], [6, -5], [6, -6], [5, 3], [4, 3], [3, 3], [2, 3], [5, -6], [4, -6], [3, -6], [2, -6]]) # SCENARIO EVAL
+            self.goal = jp.array([10, 5])
+        elif self.scenario == "Slides":
+            self.obstacles = jp.array([[3, -2], [3, -1], [3, 0]])
+            self.goal = jp.array([6, 1])
+        elif self.scenario == "EvalA":
+            self.obstacles = jp.array([[3, 0], [6, 2], [6, -2]])
+            self.goal = jp.array([14, 1])
         else:
-            self.obstacles = jp.array([[6, 3], [6, 2], [6, 1], [6, 0], [6, -1], [6, -2], [6, -3], [6, -4], [6, -5], [6, -6], [5, 3], [4, 3], [3, 3], [2, 3], [5, -6], [4, -6], [3, -6], [2, -6]]) # SCENARIO C
-            self.goal = jp.array([8, 4])
+            raise ValueError(f"Unknown scenario: {self.scenario}")
         
         self.num_obstacles = self.obstacles.shape[0]
         
@@ -94,36 +105,35 @@ class SceneConfig:
 @dataclass
 class RewardScales:
     """Reward scaling factors for different reward components."""
-    # Velocity tracking
-    tracking_lin_vel_x: float = 0.0
-    tracking_lin_vel_y: float = 0.0
-    tracking_ang_vel: float = 0.0
-    
-    # Abstract Map
-    reward_map: float = 2.0
+    # Abstract Map Guidance
+    tracking_lin_vel_x: float = 2.0
+    tracking_lin_vel_y: float = 2.0
+    tracking_ang_vel: float = 2.0
+    reward_map: float = 1.0
     cost_collision: float = -10.0
-    goal_distance: float = 0.0
+    goal_distance: float = 0.01
     goal_proximity: float = 1.0
     
-    # Com Guidance
-    planner_com_x: float = 5.0
-    planner_com_y: float = 5.0
+    # Planner Guidance
+    planner_com_x: float = 3.0
+    planner_com_y: float = 3.0
     planner_com_vel_x: float = 0.0
     planner_com_vel_y: float = 0.0
-    torso_velocity_alignment: float = 1.0
-    velocity_direction_alignment: float = 1.0
-
-    # Feet Trajectories
-    feet_swing: float = 1.0
-    feet_air_time: float = 0.5
     feet_positions: float = 0.0
+    torso_velocity_alignment: float = 0.0
+    velocity_direction_alignment: float = 1.0
+    tracking_ang_vel_from_plan: float = 0.0
+
+    # Feet Swing
+    feet_swing: float = 3.0
+    feet_air_time: float = 2.0
     
     # Base related rewards
     lin_vel_z: float = -2.0
     ang_vel_xy: float = -0.2
     orientation: float = -5.0
     base_height: float = -20.0
-    cost_linvel_rate: float = 0.0
+    cost_linvel_rate: float = -0.02
     cost_command_rate: float = 0.0
     
     # Energy related rewards
@@ -143,19 +153,19 @@ class RewardScales:
     feet_collision: float = -10.0
     
     # Other rewards
-    survival: float = 0.05
+    survival: float = 0.3
     root_acc: float = -1.0e-4
     dof_pos_limits: float = -1.0
-    episode_failed: float = 1.0
+    max_steps: float = 1.0
     
     
 @dataclass
 class CurriculumConfig:
-    ramp_steps: int = 10_000
-    tracking_lin_vel_x: float = 2.0
-    tracking_lin_vel_y: float = 2.0
-    tracking_ang_vel: float = 2.0
-    velocity_direction_alignment: float = 0.0
+    ramp_steps: int = 20_000
+    tracking_lin_vel_x: float = 0.0
+    tracking_lin_vel_y: float = 0.0
+    tracking_ang_vel: float = 0.0
+    velocity_direction_alignment: float = 1.0
     torso_velocity_alignment: float = 1.0
     planner_com_x: float = 0.0
     planner_com_y: float = 0.0
@@ -169,7 +179,7 @@ class RewardConfig:
     tracking_sigma: float = 0.5
     base_height_target: float = 0.68
     swing_period: float = 0.2
-    min_command_magnitude: float = 0.05
+    min_command_magnitude: float = 0.1
     
 
 @dataclass
